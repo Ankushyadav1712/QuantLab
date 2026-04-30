@@ -15,7 +15,14 @@ root.innerHTML = `
   <div class="app">
     <header class="header">
       <h1><span class="logo-dot"></span> QuantLab</h1>
-      <div>
+      <div class="header-actions">
+        <button type="button" id="help-btn" class="icon-btn" title="Show welcome guide" aria-label="Show welcome guide">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+        </button>
         <button type="button" id="op-docs-btn">Operator Docs</button>
       </div>
     </header>
@@ -107,6 +114,118 @@ sidebar.setOnCorrelate(async (ids) => {
 });
 
 sidebar.refresh();
+
+// ---------- First-visit welcome ----------
+
+const WELCOME_KEY = 'quantlab.welcomed';
+const SAMPLE_EXPRESSION = 'decay_linear(rank(momentum_20), 20)';
+
+document.getElementById('help-btn').addEventListener('click', () => openWelcomeModal({ force: true }));
+
+// Show on first visit (after a short delay so the rest of the UI paints first)
+if (!localStorage.getItem(WELCOME_KEY)) {
+  setTimeout(() => openWelcomeModal({ force: false }), 300);
+}
+
+function openWelcomeModal({ force }) {
+  showModal(
+    'Welcome to QuantLab',
+    `
+      <div class="welcome">
+        <p class="welcome-tagline">A browser-based platform for quantitative alpha research on US&nbsp;equities.</p>
+
+        <ol class="welcome-steps">
+          <li>
+            <span class="welcome-num">1</span>
+            <div>
+              <strong>Write a signal</strong> in the expression editor —
+              try <code>rank(delta(close, 5))</code> or
+              <code>decay_linear(rank(momentum_20), 20)</code>.
+              <span class="welcome-hint">23 operators · 32 fields · click <em>Operator Docs</em> for the full reference.</span>
+            </div>
+          </li>
+          <li>
+            <span class="welcome-num">2</span>
+            <div>
+              <strong>Tweak the run.</strong> Open the <em>Settings</em> drawer to set
+              date range, neutralization (none / market / sector), book size,
+              transaction cost, and decay.
+            </div>
+          </li>
+          <li>
+            <span class="welcome-num">3</span>
+            <div>
+              <strong>Click <em>Run Backtest</em>.</strong>
+              You'll get Sharpe, drawdown, fitness, monthly heatmap, and PnL
+              curves in under a second.
+            </div>
+          </li>
+          <li>
+            <span class="welcome-num">4</span>
+            <div>
+              <strong>Trust but verify.</strong> Every backtest is automatically
+              split <strong>70&nbsp;% in-sample / 30&nbsp;% out-of-sample</strong>
+              so you can tell if the alpha generalizes — or just curve-fits the
+              first three quarters of your data.
+            </div>
+          </li>
+          <li>
+            <span class="welcome-num">5</span>
+            <div>
+              <strong>Save what works</strong> in the sidebar — then blend
+              alphas or compare correlations to find uncorrelated edge.
+            </div>
+          </li>
+        </ol>
+
+        <div class="welcome-tip">
+          <strong>New to alpha research?</strong> Click
+          <em>Try a sample alpha</em> below — it loads a working long-only
+          momentum signal that delivers Sharpe&nbsp;~&nbsp;1.0 over 2019–2024.
+        </div>
+      </div>
+    `,
+    [
+      {
+        label: force ? 'Close' : "Skip — I'll explore",
+        action: () => {
+          localStorage.setItem(WELCOME_KEY, '1');
+          closeModal();
+        },
+      },
+      {
+        label: 'Try a sample alpha →',
+        primary: true,
+        action: async () => {
+          localStorage.setItem(WELCOME_KEY, '1');
+          closeModal();
+          await runSampleAlpha();
+        },
+      },
+    ]
+  );
+}
+
+async function runSampleAlpha() {
+  // Set the editor to a known-good expression, then drive the Run button so
+  // the spinner / disabled state behave exactly like a real click.
+  editor.setExpression(SAMPLE_EXPRESSION);
+
+  // Flip neutralization to "none" — the long-only setting that makes momentum
+  // actually clear costs on this universe.  We mutate the segmented control
+  // directly because there's no programmatic API for it.
+  const neutSeg = document.querySelector('[data-setting="neutralization"]');
+  if (neutSeg) {
+    neutSeg.querySelectorAll('button').forEach((b) =>
+      b.classList.toggle('active', b.dataset.value === 'none')
+    );
+    neutSeg.dataset.value = 'none';
+    // Bubble an input event so editor.js's modified-count listener re-runs.
+    neutSeg.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  document.querySelector('[data-role="run"]')?.click();
+}
 
 // ---------- Operator Docs modal ----------
 

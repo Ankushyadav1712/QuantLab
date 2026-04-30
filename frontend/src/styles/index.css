@@ -146,6 +146,28 @@ select:focus {
   background: var(--accent-blue);
   box-shadow: 0 0 12px var(--accent-blue);
 }
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.icon-btn:hover {
+  color: var(--text-primary);
+  border-color: #444c56;
+  background: #2d333b;
+}
 
 .sidebar {
   grid-area: sidebar;
@@ -968,6 +990,74 @@ select:focus {
   letter-spacing: 0.06em;
   color: var(--text-secondary);
   margin-bottom: 8px;
+}
+
+/* ---------- Welcome modal ---------- */
+
+.welcome { display: flex; flex-direction: column; gap: 14px; }
+.welcome-tagline {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.welcome-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.welcome-steps li {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  align-items: start;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+.welcome-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(0, 212, 255, 0.12);
+  color: var(--accent-blue);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  flex-shrink: 0;
+}
+.welcome strong { color: var(--text-primary); font-weight: 600; }
+.welcome em { font-style: normal; color: var(--accent-blue); }
+.welcome code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--accent-green);
+  border: 1px solid var(--border);
+}
+.welcome-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.welcome-tip {
+  font-size: 13px;
+  color: var(--text-primary);
+  background: rgba(0, 212, 255, 0.06);
+  border: 1px solid rgba(0, 212, 255, 0.25);
+  border-radius: 8px;
+  padding: 10px 12px;
+  line-height: 1.5;
 }
 
 .operator-list {
