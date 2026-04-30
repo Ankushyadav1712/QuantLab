@@ -9,7 +9,19 @@ const OPERATOR_NAMES = new Set([
   'rank', 'zscore', 'demean', 'scale', 'normalize',
   'abs', 'log', 'sign', 'power', 'max', 'min', 'if_else',
 ]);
-const FIELD_NAMES = new Set(['open', 'high', 'low', 'close', 'volume', 'returns', 'vwap']);
+// Stays in sync with backend FIELDS in main.py (kept hardcoded so syntax
+// highlighting works on first paint without an extra fetch). 'range' is the
+// user-facing alias for the canonical 'range_'.
+const FIELD_NAMES = new Set([
+  'open', 'high', 'low', 'close', 'volume', 'returns', 'vwap',
+  'median_price', 'weighted_close', 'range_', 'range', 'body',
+  'upper_shadow', 'lower_shadow', 'gap',
+  'log_returns', 'abs_returns', 'intraday_return',
+  'overnight_return', 'signed_volume',
+  'dollar_volume', 'adv20', 'volume_ratio', 'amihud',
+  'true_range', 'atr', 'realized_vol', 'skewness', 'kurtosis',
+  'momentum_5', 'momentum_20', 'close_to_high_252', 'high_low_ratio',
+]);
 
 const QUICK = [
   { label: 'rank', insert: 'rank()' },

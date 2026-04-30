@@ -129,3 +129,100 @@ def test_universe_and_date_filter(simple_data, sector_map):
 
     assert list(result.weights.columns) == ["A", "B"]
     assert len(result.dates) == 10  # rows 5..14 inclusive
+
+
+# ---------- Spec-required additions on a 100×10 synthetic fixture ----------
+
+
+@pytest.fixture
+def synth_data():
+    dates = pd.date_range("2020-01-02", periods=100, freq="B")
+    tickers = [f"T{i}" for i in range(10)]
+    rng = np.random.default_rng(7)
+    closes = pd.DataFrame(
+        100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, (100, 10)), axis=0)),
+        index=dates,
+        columns=tickers,
+    )
+    return {"close": closes, "returns": closes.pct_change()}
+
+
+@pytest.fixture
+def synth_sector_map():
+    return {f"T{i}": ("A" if i < 5 else "B") for i in range(10)}
+
+
+def _full_universe_config(data, **overrides):
+    closes = data["close"]
+    cfg = dict(
+        universe=list(closes.columns),
+        start_date=str(closes.index[0].date()),
+        end_date=str(closes.index[-1].date()),
+    )
+    cfg.update(overrides)
+    return SimulationConfig(**cfg)
+
+
+def test_constant_alpha_zero_weights_after_market_neutralization(
+    synth_data, synth_sector_map
+):
+    closes = synth_data["close"]
+    alpha = pd.DataFrame(1.0, index=closes.index, columns=closes.columns)
+
+    bt = Backtester(synth_data, synth_sector_map)
+    cfg = _full_universe_config(synth_data, neutralization="market")
+    result = bt.run(alpha, cfg)
+
+    # Spec: weights are all-zero (after neutralization the alpha is identically 0,
+    # then the divide-by-zero guard turns weights into zeros).
+    assert (result.weights.abs().to_numpy() < 1e-12).all()
+    assert (result.positions.abs().to_numpy() < 1e-9).all()
+
+
+def test_first_turnover_is_zero(synth_data, synth_sector_map):
+    """No prior position on day 0 → turnover is 0 (NaN difference is skipped)."""
+    closes = synth_data["close"]
+    rng = np.random.default_rng(11)
+    alpha = pd.DataFrame(
+        rng.standard_normal(closes.shape), index=closes.index, columns=closes.columns
+    )
+
+    bt = Backtester(synth_data, synth_sector_map)
+    result = bt.run(alpha, _full_universe_config(synth_data))
+
+    assert result.turnover[0] == 0.0
+    # Subsequent turnovers should be strictly positive (random alpha → real trades)
+    assert any(t > 0 for t in result.turnover[1:])
+
+
+def test_final_cum_pnl_is_sum_of_daily(synth_data, synth_sector_map):
+    closes = synth_data["close"]
+    rng = np.random.default_rng(99)
+    alpha = pd.DataFrame(
+        rng.standard_normal(closes.shape), index=closes.index, columns=closes.columns
+    )
+
+    bt = Backtester(synth_data, synth_sector_map)
+    result = bt.run(alpha, _full_universe_config(synth_data))
+
+    assert result.cumulative_pnl[-1] == pytest.approx(sum(result.daily_pnl), abs=1e-9)
+
+
+def test_costs_reduce_pnl_vs_zero_cost(synth_data, synth_sector_map):
+    closes = synth_data["close"]
+    rng = np.random.default_rng(2026)
+    alpha = pd.DataFrame(
+        rng.standard_normal(closes.shape), index=closes.index, columns=closes.columns
+    )
+
+    bt = Backtester(synth_data, synth_sector_map)
+    free = bt.run(alpha, _full_universe_config(synth_data, transaction_cost_bps=0.0))
+    paid = bt.run(alpha, _full_universe_config(synth_data, transaction_cost_bps=10.0))
+
+    # Same gross PnL, but the paid run trades into costs every day → strictly lower
+    # final cumulative PnL.  And the cost magnitude must equal sum(turnover) * bps.
+    assert paid.cumulative_pnl[-1] < free.cumulative_pnl[-1]
+
+    expected_cost = sum(paid.turnover) * 10.0 / 10_000.0
+    actual_cost = free.cumulative_pnl[-1] - paid.cumulative_pnl[-1]
+    assert actual_cost == pytest.approx(expected_cost, rel=1e-9, abs=1e-6)

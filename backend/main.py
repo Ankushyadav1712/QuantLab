@@ -19,7 +19,7 @@ from config import (
     SECTOR_MAP,
     UNIVERSE,
 )
-from data.fetcher import DataFetcher
+from data.fetcher import ALL_FIELDS, DataFetcher
 from db.database import connect
 from db.migrations import init_db
 from engine.backtester import Backtester, SimulationConfig
@@ -60,7 +60,52 @@ OPERATORS = [
     {"name": "if_else", "args": "(cond, x, y)", "description": "Element-wise conditional"},
 ]
 
-DATA_FIELDS = ["open", "high", "low", "close", "volume", "returns", "vwap"]
+# Rich field metadata: every entry is {name, category, description}.  Returned
+# from /api/operators so the frontend can list & autocomplete all 32 fields.
+FIELDS: list[dict[str, str]] = [
+    # ----- price (7 originals) -----
+    {"name": "open", "category": "price", "description": "Opening price"},
+    {"name": "high", "category": "price", "description": "Daily high price"},
+    {"name": "low", "category": "price", "description": "Daily low price"},
+    {"name": "close", "category": "price", "description": "Closing price"},
+    {"name": "volume", "category": "price", "description": "Daily share volume"},
+    {"name": "returns", "category": "price", "description": "Daily simple return (close.pct_change)"},
+    {"name": "vwap", "category": "price", "description": "Typical price (high + low + close) / 3"},
+    # ----- price structure (7) -----
+    {"name": "median_price", "category": "price_structure", "description": "Average of high and low; cleaner price estimate than close"},
+    {"name": "weighted_close", "category": "price_structure", "description": "Close-weighted typical price; smoother than simple average"},
+    {"name": "range_", "category": "price_structure", "description": "High minus low; daily volatility proxy (alias: range)"},
+    {"name": "body", "category": "price_structure", "description": "Absolute candle body size; small body indicates indecision"},
+    {"name": "upper_shadow", "category": "price_structure", "description": "Rejection of higher prices; potential bearish signal"},
+    {"name": "lower_shadow", "category": "price_structure", "description": "Rejection of lower prices; potential bullish signal"},
+    {"name": "gap", "category": "price_structure", "description": "Overnight price gap; captures after-hours sentiment"},
+    # ----- return variants (5) -----
+    {"name": "log_returns", "category": "return_variants", "description": "Log of price ratio; symmetric and better for compounding"},
+    {"name": "abs_returns", "category": "return_variants", "description": "Absolute daily return; volatility proxy"},
+    {"name": "intraday_return", "category": "return_variants", "description": "Close minus open over open; pure intraday momentum"},
+    {"name": "overnight_return", "category": "return_variants", "description": "Open minus prior close; captures news/earnings reaction"},
+    {"name": "signed_volume", "category": "return_variants", "description": "Volume signed by return direction; money flow proxy"},
+    # ----- volume & liquidity (4) -----
+    {"name": "dollar_volume", "category": "volume_liquidity", "description": "Price times volume; true liquidity measure"},
+    {"name": "adv20", "category": "volume_liquidity", "description": "20-day average daily volume; liquidity baseline"},
+    {"name": "volume_ratio", "category": "volume_liquidity", "description": "Volume divided by adv20; values above 1 indicate unusual activity"},
+    {"name": "amihud", "category": "volume_liquidity", "description": "Absolute return over dollar volume; Amihud illiquidity ratio"},
+    # ----- volatility & risk (5) -----
+    {"name": "true_range", "category": "volatility_risk", "description": "Volatility accounting for gaps; better than simple high-low range"},
+    {"name": "atr", "category": "volatility_risk", "description": "14-day average true range; standard volatility measure"},
+    {"name": "realized_vol", "category": "volatility_risk", "description": "20-day rolling return standard deviation"},
+    {"name": "skewness", "category": "volatility_risk", "description": "60-day rolling return skewness; negative values indicate crash risk"},
+    {"name": "kurtosis", "category": "volatility_risk", "description": "60-day rolling return kurtosis; high values indicate fat tails"},
+    # ----- momentum & relative (4) -----
+    {"name": "momentum_5", "category": "momentum_relative", "description": "5-day price momentum"},
+    {"name": "momentum_20", "category": "momentum_relative", "description": "20-day price momentum"},
+    {"name": "close_to_high_252", "category": "momentum_relative", "description": "Ratio of close to 52-week high; distance from recent peak"},
+    {"name": "high_low_ratio", "category": "momentum_relative", "description": "High over low; intraday volatility as a ratio"},
+]
+
+# Plain-name list for callers that only want field names.
+DATA_FIELDS: list[str] = [f["name"] for f in FIELDS]
+assert sorted(DATA_FIELDS) == sorted(ALL_FIELDS), "FIELDS and ALL_FIELDS must agree"
 
 
 # ---------- Lifespan: load data + init DB ----------
@@ -77,7 +122,9 @@ async def lifespan(_app: FastAPI):
     fetcher.download_universe()  # idempotent — fast on cache hit
 
     spy_fetcher = DataFetcher()
-    spy_frames = spy_fetcher.download_universe(tickers=["SPY"])
+    spy_frames = spy_fetcher.download_universe(
+        tickers=["SPY"], compute_derived=False
+    )
     spy_returns = (
         spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
     )
@@ -196,7 +243,13 @@ def get_universe():
 
 @app.get("/api/operators")
 def get_operators():
-    return {"operators": OPERATORS, "data_fields": DATA_FIELDS}
+    return {
+        "operators": OPERATORS,
+        "fields": FIELDS,
+        # Kept for backwards compatibility with any caller that read the old
+        # flat-list shape; new code should prefer `fields`.
+        "data_fields": DATA_FIELDS,
+    }
 
 
 @app.post("/api/validate")
@@ -383,19 +436,35 @@ async def alphas_correlations(req: CorrelationRequest):
 @app.get("/api/data/preview")
 def data_preview(ticker: str):
     fetcher: DataFetcher = _state["fetcher"]
-    frame = fetcher._frames.get(ticker)
-    if frame is None:
+
+    # Start with the per-ticker frame (the 7 base fields).
+    base = fetcher._frames.get(ticker)
+    if base is None:
         path = fetcher._cache_path(ticker)
         if path.exists():
             try:
-                frame = pd.read_parquet(path)
+                base = pd.read_parquet(path)
             except Exception:
-                frame = None
-    if frame is None or frame.empty:
+                base = None
+    if base is None or base.empty:
         raise HTTPException(status_code=404, detail=f"No cached data for {ticker}")
 
-    last30 = frame.tail(30).copy()
-    last30.index = last30.index.strftime("%Y-%m-%d")
+    # Pull this ticker's column out of every derived (dates × tickers) matrix
+    # and join it onto the per-ticker frame, so the preview shows all 32 fields.
+    columns = {f["name"]: base[f["name"]] for f in FIELDS if f["name"] in base.columns}
+    for field, matrix in fetcher._matrix.items():
+        if field in columns or matrix is None or matrix.empty:
+            continue
+        if ticker in matrix.columns:
+            columns[field] = matrix[ticker]
+    enriched = pd.DataFrame(columns)
+
+    # Order columns to match FIELDS so the response is predictable.
+    ordered = [f["name"] for f in FIELDS if f["name"] in enriched.columns]
+    enriched = enriched[ordered]
+
+    last30 = enriched.tail(30).copy()
+    last30.index = pd.to_datetime(last30.index).strftime("%Y-%m-%d")
     last30 = last30.reset_index().rename(columns={"index": "date"})
     rows: list[dict[str, Any]] = []
     for record in last30.to_dict(orient="records"):

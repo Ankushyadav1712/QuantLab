@@ -188,3 +188,65 @@ def test_if_else():
     y = pd.DataFrame({"X": [10.0, 20.0, 30.0]})
     out = ops.if_else(cond, x, y)
     assert list(out["X"]) == [1.0, 20.0, 3.0]
+
+
+# ---------- Synthetic 100×10 fixture for spec-required tests ----------
+
+
+@pytest.fixture
+def synth_df():
+    dates = pd.date_range("2020-01-01", periods=100, freq="B")
+    tickers = [f"T{i}" for i in range(10)]
+    rng = np.random.default_rng(2024)
+    data = rng.standard_normal((100, 10))
+    return pd.DataFrame(data, index=dates, columns=tickers)
+
+
+def test_delta_equals_x_minus_x_shift_5(synth_df):
+    pd.testing.assert_frame_equal(
+        ops.delta(synth_df, 5),
+        synth_df - synth_df.shift(5),
+    )
+
+
+def test_rank_output_in_unit_interval(synth_df):
+    r = ops.rank(synth_df)
+    arr = r.to_numpy()
+    finite = arr[~np.isnan(arr)]
+    assert finite.min() >= 0.0
+    assert finite.max() <= 1.0
+
+
+def test_ts_mean_matches_pandas_rolling_synth(synth_df):
+    pd.testing.assert_frame_equal(
+        ops.ts_mean(synth_df, 20),
+        synth_df.rolling(window=20, min_periods=20).mean(),
+    )
+
+
+def test_zscore_row_mean_zero_std_one(synth_df):
+    z = ops.zscore(synth_df)
+    # Per-row mean ≈ 0 and per-row std ≈ 1
+    assert z.mean(axis=1).abs().max() < 1e-12
+    assert (z.std(axis=1, ddof=1) - 1.0).abs().max() < 1e-12
+
+
+def test_normalize_row_abs_sum_one(synth_df):
+    n = ops.normalize(synth_df)
+    sums = n.abs().sum(axis=1).to_numpy()
+    # Allow a tiny numerical tolerance
+    np.testing.assert_allclose(sums, 1.0, atol=1e-12)
+    # And rows are demeaned
+    assert n.mean(axis=1).abs().max() < 1e-12
+
+
+# ---------- Evaluator-level: unknown function rejected ----------
+
+
+def test_evaluator_rejects_unknown_function(synth_df):
+    """Parser is purely syntactic; semantic 'unknown function' is caught here."""
+    from engine.evaluator import AlphaEvaluator
+
+    evaluator = AlphaEvaluator({"close": synth_df})
+    with pytest.raises(ValueError, match="Unknown function"):
+        evaluator.evaluate("notarealop(close)")

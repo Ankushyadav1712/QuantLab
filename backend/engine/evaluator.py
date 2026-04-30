@@ -6,6 +6,7 @@ from engine import operators as ops
 from engine.parser import (
     BinaryOp,
     DataField,
+    DATA_FIELD_ALIASES,
     FunctionCall,
     Literal,
     Parser,
@@ -44,12 +45,14 @@ class AlphaEvaluator:
             return node.value
 
         if isinstance(node, DataField):
-            if node.name not in self.data:
+            # Resolve user-facing aliases (e.g. `range` -> `range_`).
+            actual = DATA_FIELD_ALIASES.get(node.name, node.name)
+            if actual not in self.data:
                 raise ValueError(
                     f"Unknown data field: {node.name!r} "
                     f"(available: {sorted(self.data.keys())})"
                 )
-            return self.data[node.name]
+            return self.data[actual]
 
         if isinstance(node, UnaryOp):
             value = self._eval(node.operand)

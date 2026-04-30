@@ -4,7 +4,27 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Union
 
-DATA_FIELDS = {"open", "high", "low", "close", "volume", "returns", "vwap"}
+DATA_FIELDS = {
+    # Original (7)
+    "open", "high", "low", "close", "volume", "returns", "vwap",
+    # Price structure (7)
+    "median_price", "weighted_close", "range_", "body",
+    "upper_shadow", "lower_shadow", "gap",
+    # Return variants (5)
+    "log_returns", "abs_returns", "intraday_return",
+    "overnight_return", "signed_volume",
+    # Volume & liquidity (4)
+    "dollar_volume", "adv20", "volume_ratio", "amihud",
+    # Volatility & risk (5)
+    "true_range", "atr", "realized_vol", "skewness", "kurtosis",
+    # Momentum & relative (4)
+    "momentum_5", "momentum_20", "close_to_high_252", "high_low_ratio",
+}
+
+# User-facing aliases that resolve to a canonical field name.  `range` is the
+# obvious user spelling, but the canonical field is `range_` to avoid shadowing
+# Python's builtin in any consumer that uses getattr-based dispatch.
+DATA_FIELD_ALIASES = {"range": "range_"}
 
 
 class TokenType(Enum):
@@ -207,7 +227,9 @@ class Parser:
                 args = self.parse_args()
                 self._consume(TokenType.RPAREN)
                 return FunctionCall(name, args)
-            if name in DATA_FIELDS:
+            if name in DATA_FIELDS or name in DATA_FIELD_ALIASES:
+                # Preserve the user's spelling in the AST; the evaluator
+                # resolves aliases at lookup time.
                 return DataField(name)
             raise ValueError(
                 f"Unknown identifier {name!r}: not a data field; "

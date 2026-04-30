@@ -22,8 +22,13 @@ def main() -> int:
 
     for i, ticker in enumerate(UNIVERSE, 1):
         print(f"[{i:>2}/{len(UNIVERSE)}] {ticker} ...", end=" ", flush=True)
+        # compute_derived=False inside the loop — we'd otherwise overwrite the
+        # derived parquets with single-ticker data on every iteration.
         frames = fetcher.download_universe(
-            tickers=[ticker], start=DATA_START, end=DATA_END
+            tickers=[ticker],
+            start=DATA_START,
+            end=DATA_END,
+            compute_derived=False,
         )
         if ticker in frames and not frames[ticker].empty:
             rows = len(frames[ticker])
@@ -35,11 +40,20 @@ def main() -> int:
 
     elapsed = time.time() - started
     print(
-        f"\nDone in {elapsed:.1f}s — "
+        f"\nDownload done in {elapsed:.1f}s — "
         f"{len(successes)} ok, {len(failures)} failed."
     )
     if failures:
         print("Failed tickers:", ", ".join(failures))
+
+    if successes:
+        print(f"Computing derived fields for {len(successes)} tickers...", flush=True)
+        derived_started = time.time()
+        fetcher.download_universe(
+            tickers=successes, start=DATA_START, end=DATA_END, compute_derived=True
+        )
+        print(f"Derived fields ready in {time.time() - derived_started:.1f}s.")
+
     return 0 if successes else 1
 
 

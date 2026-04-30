@@ -61,12 +61,16 @@ def decay_linear(x: pd.DataFrame, d: int) -> pd.DataFrame:
 
 def ts_corr(x: pd.DataFrame, y: pd.DataFrame, d: int) -> pd.DataFrame:
     d = int(d)
-    return x.rolling(window=d, min_periods=d).corr(y)
+    out = x.rolling(window=d, min_periods=d).corr(y)
+    # pandas rolling.corr returns ±inf when a window's variance is numerically
+    # near-zero; coerce those to NaN so downstream math stays finite.
+    return out.replace([np.inf, -np.inf], np.nan)
 
 
 def ts_cov(x: pd.DataFrame, y: pd.DataFrame, d: int) -> pd.DataFrame:
     d = int(d)
-    return x.rolling(window=d, min_periods=d).cov(y)
+    out = x.rolling(window=d, min_periods=d).cov(y)
+    return out.replace([np.inf, -np.inf], np.nan)
 
 
 # ---------- Cross-sectional operators (axis=1, per date) ----------
