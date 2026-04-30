@@ -113,6 +113,54 @@ sidebar.refresh();
 document.getElementById('op-docs-btn').addEventListener('click', openOperatorDocs);
 
 let cachedOperators = null;
+
+const CATEGORY_LABELS = {
+  price: 'Price (OHLCV + derived)',
+  price_structure: 'Price structure (candle / shadows / gap)',
+  return_variants: 'Return variants',
+  volume_liquidity: 'Volume & liquidity',
+  volatility_risk: 'Volatility & risk',
+  momentum_relative: 'Momentum & relative',
+};
+
+const OP_CATEGORIES = [
+  { name: 'Time-series', match: (op) => op.name.startsWith('ts_') || ['delta', 'delay', 'decay_linear'].includes(op.name) },
+  { name: 'Cross-sectional', match: (op) => ['rank', 'zscore', 'demean', 'scale', 'normalize'].includes(op.name) },
+  { name: 'Arithmetic / element-wise', match: (op) => ['abs', 'log', 'sign', 'power', 'max', 'min', 'if_else'].includes(op.name) },
+];
+
+function groupOperators(ops) {
+  const groups = OP_CATEGORIES.map((c) => ({ name: c.name, items: [] }));
+  const seen = new Set();
+  for (const op of ops) {
+    for (let i = 0; i < OP_CATEGORIES.length; i++) {
+      if (OP_CATEGORIES[i].match(op)) { groups[i].items.push(op); seen.add(op.name); break; }
+    }
+  }
+  const leftover = ops.filter((o) => !seen.has(o.name));
+  if (leftover.length) groups.push({ name: 'Other', items: leftover });
+  return groups.filter((g) => g.items.length);
+}
+
+function groupFields(fields) {
+  const order = ['price', 'price_structure', 'return_variants', 'volume_liquidity', 'volatility_risk', 'momentum_relative'];
+  const map = new Map();
+  for (const f of fields) {
+    const key = f.category || 'other';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(f);
+  }
+  const sortedKeys = [...map.keys()].sort((a, b) => {
+    const ai = order.indexOf(a), bi = order.indexOf(b);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+  return sortedKeys.map((k) => ({ name: CATEGORY_LABELS[k] || k, items: map.get(k) }));
+}
+
+function escapeAttr(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 async function openOperatorDocs() {
   let payload = cachedOperators;
   if (!payload) {
@@ -124,31 +172,66 @@ async function openOperatorDocs() {
       return;
     }
   }
+
+  const operators = payload.operators || [];
+  // Prefer the rich `fields` array; fall back to the flat list if the backend is older.
+  const fields = (payload.fields && payload.fields.length)
+    ? payload.fields
+    : (payload.data_fields || []).map((name) => ({ name, category: 'price', description: '' }));
+
+  const opsHtml = groupOperators(operators).map((g) => `
+    <div class="docs-section">
+      <div class="docs-section-title">${g.name}</div>
+      <div class="operator-list">
+        ${g.items.map((op) => `
+          <div class="operator-item">
+            <span class="name">${op.name}</span><span class="args">${op.args}</span>
+            <span class="desc">${op.description}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `).join('');
+
+  const fieldsHtml = groupFields(fields).map((g) => `
+    <div class="docs-section">
+      <div class="docs-section-title">${g.name}</div>
+      <div class="operator-list">
+        ${g.items.map((f) => `
+          <div class="operator-item" title="${escapeAttr(f.description)}">
+            <span class="name" style="color: var(--accent-green);">${f.name}</span>
+            ${f.description ? `<span class="desc">${f.description}</span>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `).join('');
+
   showModal(
     'Operators & Data Fields',
     `
-      <div style="margin-bottom:12px;">
-        <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-secondary); margin-bottom:6px;">Data fields</div>
-        <div style="font-family:'JetBrains Mono', monospace; font-size:12px;">
-          ${(payload.data_fields || [])
-            .map(f => `<span style="color:var(--accent-green); margin-right:10px;">${f}</span>`)
-            .join('')}
-        </div>
+      <div class="docs-tabs">
+        <button type="button" class="docs-tab active" data-tab="operators">Operators (${operators.length})</button>
+        <button type="button" class="docs-tab" data-tab="fields">Data fields (${fields.length})</button>
       </div>
-      <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-secondary); margin-bottom:6px;">Operators</div>
-      <div class="operator-list">
-        ${payload.operators
-          .map(op => `
-            <div class="operator-item">
-              <span class="name">${op.name}</span><span class="args">${op.args}</span>
-              <span class="desc">${op.description}</span>
-            </div>
-          `)
-          .join('')}
-      </div>
+      <div class="docs-pane" data-pane="operators">${opsHtml}</div>
+      <div class="docs-pane" data-pane="fields" style="display:none;">${fieldsHtml}</div>
     `,
     [{ label: 'Close', primary: true, action: closeModal }]
   );
+
+  const tabsEl = document.querySelector('.docs-tabs');
+  if (tabsEl) {
+    tabsEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('.docs-tab');
+      if (!btn) return;
+      tabsEl.querySelectorAll('.docs-tab').forEach((t) => t.classList.toggle('active', t === btn));
+      const target = btn.dataset.tab;
+      document.querySelectorAll('.docs-pane').forEach((p) => {
+        p.style.display = p.dataset.pane === target ? '' : 'none';
+      });
+    });
+  }
 }
 
 // ---------- Save modal ----------
