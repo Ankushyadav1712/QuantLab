@@ -76,7 +76,9 @@ DEFAULT_BOOKSIZE = 20_000_000
 
 # CORS allow-list. In development we additionally permit "*" so that loading
 # the bundle from any host (e.g. localhost variants, network LAN) works.
-ALLOWED_ORIGINS = [
+# In production set the env var ALLOWED_ORIGINS to a comma-separated list,
+# e.g. ALLOWED_ORIGINS="https://quantlab.vercel.app,https://www.example.com".
+_DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost",
     "http://localhost:80",
     "http://localhost:5173",
@@ -85,3 +87,9 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8000",
 ]
+_env_origins = os.getenv("ALLOWED_ORIGINS", "").strip()
+ALLOWED_ORIGINS = (
+    [o.strip() for o in _env_origins.split(",") if o.strip()]
+    if _env_origins
+    else _DEFAULT_ALLOWED_ORIGINS
+)
