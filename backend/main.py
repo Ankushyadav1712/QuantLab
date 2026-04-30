@@ -154,7 +154,9 @@ app.add_middleware(
 # ---------- Helpers ----------
 
 
-def _make_config(settings: dict | None) -> SimulationConfig:
+def _make_config(
+    settings: dict | None, *, run_oos: bool = True
+) -> SimulationConfig:
     s = settings or {}
     return SimulationConfig(
         universe=s.get("universe") or UNIVERSE,
@@ -165,6 +167,8 @@ def _make_config(settings: dict | None) -> SimulationConfig:
         booksize=float(s.get("booksize", DEFAULT_BOOKSIZE)),
         transaction_cost_bps=float(s.get("transaction_cost_bps", 5.0)),
         decay=int(s.get("decay", 0)),
+        oos_split=float(s.get("oos_split", 0.3)),
+        run_oos=bool(s.get("run_oos", run_oos)),
     )
 
 
@@ -178,6 +182,8 @@ def _config_to_dict(cfg: SimulationConfig) -> dict[str, Any]:
         "booksize": cfg.booksize,
         "transaction_cost_bps": cfg.transaction_cost_bps,
         "decay": cfg.decay,
+        "oos_split": cfg.oos_split,
+        "run_oos": cfg.run_oos,
     }
 
 
@@ -195,39 +201,72 @@ def _evaluate(expression: str) -> pd.DataFrame:
     return result
 
 
+_METRIC_KEYS = (
+    "sharpe", "annual_return", "annual_vol", "max_drawdown",
+    "calmar_ratio", "sortino_ratio", "avg_turnover", "fitness",
+    "win_rate", "profit_factor", "beta", "information_ratio",
+)
+
+
+def _compute_perf_pack(result, perf: PerformanceAnalytics, *, spy: pd.Series | None):
+    """Run analytics on a BacktestResult and shape the (metrics, timeseries) pair."""
+    bench = None
+    if isinstance(spy, pd.Series) and not spy.empty:
+        bench = spy.reindex(pd.to_datetime(result.dates))
+    full = perf.compute(result, benchmark_returns=bench)
+
+    metrics = {k: full[k] for k in _METRIC_KEYS}
+    # Pass period info into compare_is_oos through the metrics dict
+    metrics["start_date"] = full.get("start_date")
+    metrics["end_date"] = full.get("end_date")
+
+    timeseries = {
+        "dates": list(result.dates),
+        "cumulative_pnl": _safe_list(result.cumulative_pnl),
+        "daily_returns": _safe_list(result.daily_returns),
+        "drawdown": full["drawdown_series"],
+        "rolling_sharpe": full["rolling_sharpe"],
+        "turnover": _safe_list(result.turnover),
+    }
+    return metrics, timeseries, full["monthly_returns"]
+
+
 def _build_response(
     expression: str, alpha_matrix: pd.DataFrame, cfg: SimulationConfig
 ) -> dict[str, Any]:
     bt = Backtester(_state["data"], SECTOR_MAP)
     try:
-        result = bt.run(alpha_matrix, cfg)
+        is_result, oos_result = bt.run(alpha_matrix, cfg)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Backtest error: {e}")
 
     spy = _state.get("spy_returns")
-    bench = None
-    if isinstance(spy, pd.Series) and not spy.empty:
-        bench = spy.reindex(pd.to_datetime(result.dates))
+    perf = PerformanceAnalytics()
 
-    perf = PerformanceAnalytics().compute(result, benchmark_returns=bench)
-
-    metric_keys = (
-        "sharpe", "annual_return", "annual_vol", "max_drawdown",
-        "calmar_ratio", "sortino_ratio", "avg_turnover", "fitness",
-        "win_rate", "profit_factor", "beta", "information_ratio",
+    is_metrics, is_timeseries, is_monthly = _compute_perf_pack(
+        is_result, perf, spy=spy
     )
 
+    oos_metrics: dict[str, Any] | None = None
+    oos_timeseries: dict[str, Any] | None = None
+    overfitting: dict[str, Any] | None = None
+    monthly_returns = is_monthly  # default: only IS data
+
+    if oos_result is not None:
+        oos_metrics, oos_timeseries, oos_monthly = _compute_perf_pack(
+            oos_result, perf, spy=spy
+        )
+        overfitting = perf.compare_is_oos(is_metrics, oos_metrics)
+        # Combined monthly-returns heatmap spans both halves
+        monthly_returns = is_monthly + oos_monthly
+
     return {
-        "metrics": {k: perf[k] for k in metric_keys},
-        "timeseries": {
-            "dates": list(result.dates),
-            "cumulative_pnl": _safe_list(result.cumulative_pnl),
-            "daily_returns": _safe_list(result.daily_returns),
-            "drawdown": perf["drawdown_series"],
-            "rolling_sharpe": perf["rolling_sharpe"],
-            "turnover": _safe_list(result.turnover),
-        },
-        "monthly_returns": perf["monthly_returns"],
+        "is_metrics": is_metrics,
+        "oos_metrics": oos_metrics,
+        "is_timeseries": is_timeseries,
+        "oos_timeseries": oos_timeseries,
+        "overfitting_analysis": overfitting,
+        "monthly_returns": monthly_returns,
         "expression": expression,
         "settings": _config_to_dict(cfg),
     }
@@ -269,7 +308,9 @@ def validate(req: ValidateRequest):
 @app.post("/api/simulate")
 def simulate(req: SimulationRequest):
     alpha = _evaluate(req.expression)
-    cfg = _make_config(req.settings)
+    # The body's `run_oos` flag wins over anything inside `settings` so
+    # callers can toggle the split without rebuilding their settings dict.
+    cfg = _make_config(req.settings, run_oos=req.run_oos)
     return _build_response(req.expression, alpha, cfg)
 
 

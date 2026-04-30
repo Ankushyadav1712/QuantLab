@@ -302,11 +302,145 @@ select:focus {
 
 /* ---------- Dashboard ---------- */
 
+.dashboard-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 .dashboard {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
 }
+
+/* ---------- IS/OOS comparison panel ---------- */
+
+.is-oos-section {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.is-oos-header {
+  display: grid;
+  grid-template-columns: 1fr 24px 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+.is-oos-side-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+.is-oos-period {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.is-oos-arrow,
+.is-oos-arrow-mid {
+  color: var(--text-secondary);
+  font-size: 18px;
+  text-align: center;
+}
+.is-oos-grid {
+  display: grid;
+  grid-template-columns: 1fr 24px 1fr;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 0;
+}
+.is-oos-side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.is-oos-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.is-oos-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.is-oos-val.good { color: var(--accent-green); }
+.is-oos-val.warn { color: var(--accent-orange); }
+.is-oos-val.bad  { color: var(--accent-red); }
+
+.oos-badge {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.oos-badge.good { color: var(--accent-green); border-color: rgba(57, 211, 83, 0.4); background: rgba(57, 211, 83, 0.08); }
+.oos-badge.warn { color: var(--accent-orange); border-color: rgba(240, 160, 32, 0.4); background: rgba(240, 160, 32, 0.08); }
+.oos-badge.bad  { color: var(--accent-red); border-color: rgba(255, 107, 107, 0.4); background: rgba(255, 107, 107, 0.08); }
+
+.is-oos-decay {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.is-oos-decay strong {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary);
+}
+
+.oos-warning {
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(255, 107, 107, 0.1);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  color: var(--accent-red);
+}
+
+@media (max-width: 720px) {
+  .is-oos-header { grid-template-columns: 1fr; }
+  .is-oos-arrow { display: none; }
+  .is-oos-grid { grid-template-columns: 1fr; }
+  .is-oos-arrow-mid { transform: rotate(90deg); }
+}
+
+/* ---------- Chart overlay (boundary line + region labels) ---------- */
+
+.chart-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.chart-overlay .boundary-line {
+  position: absolute;
+  top: 0;
+  bottom: 28px;
+  width: 0;
+  border-left: 1px dashed rgba(230, 237, 243, 0.45);
+}
+.chart-overlay .region-label {
+  position: absolute;
+  top: 2px;
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-secondary);
+  background: rgba(13, 17, 23, 0.7);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.chart-overlay .region-label.is { color: var(--accent-blue); }
+.chart-overlay .region-label.oos { color: var(--accent-green); }
 .metric-card {
   padding: 16px;
   position: relative;

@@ -1,4 +1,6 @@
-// Dashboard — 6 metric cards with animated counters and tooltips.
+// Dashboard — primary 6-card grid (IS metrics) + IS/OOS comparison panel.
+// The 6 cards always reflect the in-sample window; the comparison section
+// shows the OOS half side-by-side with a decay/overfitting verdict.
 
 const METRICS = [
   {
@@ -45,10 +47,44 @@ const METRICS = [
   },
 ];
 
-export function createDashboard(container) {
-  container.classList.add('dashboard');
-  container.innerHTML = '';
+const SEVERITY_CLASS = {
+  robust: 'good',
+  moderate: 'warn',
+  high: 'warn',
+  severe: 'bad',
+};
 
+const SEVERITY_ICON = {
+  robust: '✅',
+  moderate: '⚠️',
+  high: '⚠️',
+  severe: '❌',
+};
+
+function fmtPct(v) {
+  if (v == null || Number.isNaN(v)) return '—';
+  return (v * 100).toFixed(2) + '%';
+}
+function fmtNum(v) {
+  if (v == null || Number.isNaN(v)) return '—';
+  return Number(v).toFixed(2);
+}
+function fmtPeriod(p) {
+  if (!p || (!p.start && !p.end)) return '';
+  return `${p.start ?? '?'} → ${p.end ?? '?'}`;
+}
+
+export function createDashboard(container) {
+  container.classList.add('dashboard-wrap');
+  container.innerHTML = `
+    <div data-role="metrics-grid" class="dashboard"></div>
+    <div data-role="is-oos" class="is-oos-section glass" style="display:none;"></div>
+  `;
+
+  const metricsGrid = container.querySelector('[data-role="metrics-grid"]');
+  const isOosEl = container.querySelector('[data-role="is-oos"]');
+
+  // Build the 6 metric cards
   const cards = {};
   for (const m of METRICS) {
     const card = document.createElement('div');
@@ -58,7 +94,7 @@ export function createDashboard(container) {
       <div class="label">${m.label}</div>
       <div class="value">—</div>
     `;
-    container.appendChild(card);
+    metricsGrid.appendChild(card);
     cards[m.key] = card;
   }
 
@@ -108,7 +144,7 @@ export function createDashboard(container) {
     requestAnimationFrame(step);
   }
 
-  function setMetrics(metrics) {
+  function setMetrics(metrics, opts = {}) {
     for (const m of METRICS) {
       const card = cards[m.key];
       const valueEl = card.querySelector('.value');
@@ -122,6 +158,74 @@ export function createDashboard(container) {
       if (cls) valueEl.classList.add(cls);
       animateNumber(valueEl, v, m.format);
     }
+
+    const oos = opts.oos_metrics;
+    const analysis = opts.overfitting_analysis;
+    if (metrics && oos && analysis) {
+      renderIsOos(metrics, oos, analysis);
+      isOosEl.style.display = '';
+    } else {
+      isOosEl.style.display = 'none';
+      isOosEl.innerHTML = '';
+    }
+  }
+
+  function renderIsOos(isM, oosM, analysis) {
+    const isSharpe = isM.sharpe ?? 0;
+    const oosSharpe = oosM.sharpe ?? 0;
+    // OOS-color heuristic from spec: green if OOS > 0.6×IS, yellow if > 0.3×IS, red otherwise
+    let oosTone = 'bad';
+    if (isSharpe > 0) {
+      if (oosSharpe >= isSharpe * 0.6) oosTone = 'good';
+      else if (oosSharpe >= isSharpe * 0.3) oosTone = 'warn';
+    } else if (oosSharpe >= 0) {
+      oosTone = 'good';
+    }
+
+    const severity = analysis.severity || 'moderate';
+    const badgeClass = SEVERITY_CLASS[severity] || 'warn';
+    const icon = SEVERITY_ICON[severity] || '⚠️';
+    const decayPct = analysis.sharpe_decay == null
+      ? '—'
+      : `${(analysis.sharpe_decay * 100).toFixed(1)}%`;
+
+    const warningBanner = analysis.overfitting_flag
+      ? `<div class="oos-warning">⚠️ This alpha shows signs of overfitting. OOS performance dropped significantly.</div>`
+      : '';
+
+    isOosEl.innerHTML = `
+      <div class="is-oos-header">
+        <div>
+          <div class="is-oos-side-label">In-Sample</div>
+          <div class="is-oos-period">${fmtPeriod(analysis.is_period)}</div>
+        </div>
+        <div class="is-oos-arrow">→</div>
+        <div>
+          <div class="is-oos-side-label">Out-of-Sample</div>
+          <div class="is-oos-period">${fmtPeriod(analysis.oos_period)}</div>
+        </div>
+        <div class="is-oos-verdict">
+          <span class="oos-badge ${badgeClass}">${icon} ${analysis.overfitting_label || ''}</span>
+        </div>
+      </div>
+
+      <div class="is-oos-grid">
+        <div class="is-oos-side">
+          <div class="is-oos-row"><span>Sharpe</span><span class="is-oos-val">${fmtNum(isM.sharpe)}</span></div>
+          <div class="is-oos-row"><span>Return</span><span class="is-oos-val">${fmtPct(isM.annual_return)}</span></div>
+          <div class="is-oos-row"><span>MDD</span><span class="is-oos-val">${fmtPct(isM.max_drawdown)}</span></div>
+        </div>
+        <div class="is-oos-arrow-mid">→</div>
+        <div class="is-oos-side">
+          <div class="is-oos-row"><span>Sharpe</span><span class="is-oos-val ${oosTone}">${fmtNum(oosM.sharpe)}</span></div>
+          <div class="is-oos-row"><span>Return</span><span class="is-oos-val">${fmtPct(oosM.annual_return)}</span></div>
+          <div class="is-oos-row"><span>MDD</span><span class="is-oos-val">${fmtPct(oosM.max_drawdown)}</span></div>
+        </div>
+      </div>
+
+      <div class="is-oos-decay">Sharpe decay: <strong>${decayPct}</strong></div>
+      ${warningBanner}
+    `;
   }
 
   function clear() {

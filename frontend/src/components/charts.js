@@ -1,5 +1,9 @@
-// Charts panel — lightweight-charts (loaded from CDN as window.LightweightCharts) +
-// canvas/grid for histogram and monthly heatmap.
+// Charts panel — lightweight-charts (loaded from CDN as window.LightweightCharts)
+// for time-series; Canvas/CSS-grid for histogram and heatmap.
+//
+// Equity / drawdown / rolling-Sharpe accept BOTH IS and OOS timeseries; each
+// half is rendered as its own series with a distinct color, and a vertical
+// dashed line marks the IS/OOS boundary date.
 
 const CHART_THEME = {
   layout: {
@@ -53,39 +57,9 @@ export function createCharts(container) {
     heatmap: container.querySelector('[data-chart="heatmap"]'),
   };
 
+  // Each chart is recreated from scratch on every setData call (simpler than
+  // diffing series).  charts[key] holds {chart, series:[]} so destroy works.
   const charts = {};
-
-  function ensureChart(host, key, seriesType, seriesOpts) {
-    if (charts[key]) return charts[key];
-    const lc = window.LightweightCharts;
-    if (!lc) {
-      host.textContent = 'Lightweight-charts failed to load.';
-      return null;
-    }
-    const chart = lc.createChart(host, {
-      ...CHART_THEME,
-      width: host.clientWidth,
-      height: host.clientHeight,
-    });
-    let series;
-    if (seriesType === 'area') series = chart.addAreaSeries(seriesOpts);
-    else if (seriesType === 'line') series = chart.addLineSeries(seriesOpts);
-    else if (seriesType === 'baseline') series = chart.addBaselineSeries(seriesOpts);
-    charts[key] = { chart, series };
-
-    new ResizeObserver(() => {
-      chart.applyOptions({ width: host.clientWidth, height: host.clientHeight });
-    }).observe(host);
-
-    return charts[key];
-  }
-
-  function destroyChart(key) {
-    if (charts[key]) {
-      try { charts[key].chart.remove(); } catch (_) {}
-      delete charts[key];
-    }
-  }
 
   function pairData(dates, values) {
     const out = [];
@@ -97,38 +71,156 @@ export function createCharts(container) {
     return out;
   }
 
-  function renderEquityCurve(dates, pnl) {
-    destroyChart('equity');
-    const c = ensureChart(hosts.equity, 'equity', 'area', {
-      lineColor: '#00d4ff',
-      topColor: 'rgba(0,212,255,0.4)',
-      bottomColor: 'rgba(0,212,255,0.02)',
-      lineWidth: 2,
+  function destroyChart(key) {
+    if (!charts[key]) return;
+    try { charts[key].chart.remove(); } catch (_) {}
+    if (charts[key].overlay) charts[key].overlay.remove();
+    delete charts[key];
+  }
+
+  function makeChart(host, key) {
+    destroyChart(key);
+    const lc = window.LightweightCharts;
+    if (!lc) {
+      host.textContent = 'Lightweight-charts failed to load.';
+      return null;
+    }
+    host.style.position = 'relative';
+    const chart = lc.createChart(host, {
+      ...CHART_THEME,
+      width: host.clientWidth,
+      height: host.clientHeight,
+    });
+    const entry = { chart, series: [], host, key };
+    charts[key] = entry;
+    new ResizeObserver(() => {
+      chart.applyOptions({ width: host.clientWidth, height: host.clientHeight });
+      placeBoundary(entry);
+      placeRegionLabels(entry);
+    }).observe(host);
+    return entry;
+  }
+
+  // Build a vertical dashed-white line overlay at boundaryTime, plus the
+  // "In-Sample" / "Out-of-Sample" text labels.  Re-positioned on resize and
+  // when the visible time range changes.
+  function ensureOverlay(entry, boundaryTime) {
+    if (!entry) return;
+    if (!entry.overlay) {
+      const el = document.createElement('div');
+      el.className = 'chart-overlay';
+      el.innerHTML = `
+        <div class="boundary-line" data-role="boundary"></div>
+        <div class="region-label is" data-role="is-label">In-Sample</div>
+        <div class="region-label oos" data-role="oos-label">Out-of-Sample</div>
+      `;
+      entry.host.appendChild(el);
+      entry.overlay = el;
+    }
+    entry.boundaryTime = boundaryTime;
+    placeBoundary(entry);
+    placeRegionLabels(entry);
+    entry.chart.timeScale().subscribeVisibleTimeRangeChange(() => {
+      placeBoundary(entry);
+      placeRegionLabels(entry);
+    });
+  }
+
+  function placeBoundary(entry) {
+    if (!entry || !entry.overlay || !entry.boundaryTime) return;
+    const line = entry.overlay.querySelector('[data-role="boundary"]');
+    const x = entry.chart.timeScale().timeToCoordinate(entry.boundaryTime);
+    if (x == null) {
+      line.style.display = 'none';
+    } else {
+      line.style.display = '';
+      line.style.left = `${x}px`;
+    }
+  }
+
+  function placeRegionLabels(entry) {
+    if (!entry || !entry.overlay || !entry.boundaryTime) return;
+    const isLabel = entry.overlay.querySelector('[data-role="is-label"]');
+    const oosLabel = entry.overlay.querySelector('[data-role="oos-label"]');
+    const x = entry.chart.timeScale().timeToCoordinate(entry.boundaryTime);
+    if (x == null) return;
+    const w = entry.host.clientWidth;
+    isLabel.style.left = `${Math.max(8, x / 2 - 35)}px`;
+    oosLabel.style.left = `${Math.min(w - 110, x + (w - x) / 2 - 50)}px`;
+  }
+
+  // ---------- Equity / drawdown / Sharpe ----------
+
+  function renderEquityCurve(isTs, oosTs) {
+    const entry = makeChart(hosts.equity, 'equity');
+    if (!entry) return;
+
+    const isData = pairData(isTs.dates, isTs.cumulative_pnl);
+    let oosData = [];
+    let boundaryTime = null;
+
+    if (oosTs && oosTs.dates && oosTs.dates.length) {
+      // Stitch OOS continuously onto the IS equity curve: shift every OOS
+      // point up by the final IS cumulative PnL.
+      const isFinal = isData.length ? isData[isData.length - 1].value : 0;
+      oosData = pairData(oosTs.dates, oosTs.cumulative_pnl).map((p) => ({
+        time: p.time, value: p.value + isFinal,
+      }));
+      boundaryTime = oosTs.dates[0];
+    }
+
+    const isSeries = entry.chart.addLineSeries({
+      color: '#00d4ff', lineWidth: 2,
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
     });
-    if (!c) return;
-    c.series.setData(pairData(dates, pnl));
-    c.chart.timeScale().fitContent();
+    isSeries.setData(isData);
+    entry.series.push(isSeries);
+
+    if (oosData.length) {
+      const oosSeries = entry.chart.addLineSeries({
+        color: '#39d353', lineWidth: 2,
+        priceFormat: { type: 'price', precision: 0, minMove: 1 },
+      });
+      oosSeries.setData(oosData);
+      entry.series.push(oosSeries);
+      ensureOverlay(entry, boundaryTime);
+    }
+
+    entry.chart.timeScale().fitContent();
   }
 
-  function renderDrawdown(dates, dd) {
-    destroyChart('drawdown');
-    const c = ensureChart(hosts.drawdown, 'drawdown', 'area', {
-      lineColor: '#ff6b6b',
-      topColor: 'rgba(255,107,107,0.05)',
-      bottomColor: 'rgba(255,107,107,0.5)',
-      lineWidth: 1,
+  function renderDrawdown(isTs, oosTs) {
+    const entry = makeChart(hosts.drawdown, 'drawdown');
+    if (!entry) return;
+
+    const toPct = (xs) => (xs || []).map((v) => (v == null ? null : v * 100));
+
+    const isSeries = entry.chart.addLineSeries({
+      color: '#00d4ff', lineWidth: 1,
       priceFormat: { type: 'percent', precision: 2 },
     });
-    if (!c) return;
-    const pct = dd.map((v) => (v == null ? null : v * 100));
-    c.series.setData(pairData(dates, pct));
-    c.chart.timeScale().fitContent();
+    isSeries.setData(pairData(isTs.dates, toPct(isTs.drawdown)));
+    entry.series.push(isSeries);
+
+    if (oosTs && oosTs.dates && oosTs.dates.length) {
+      const oosSeries = entry.chart.addLineSeries({
+        color: '#ff6b6b', lineWidth: 1,
+        priceFormat: { type: 'percent', precision: 2 },
+      });
+      oosSeries.setData(pairData(oosTs.dates, toPct(oosTs.drawdown)));
+      entry.series.push(oosSeries);
+      ensureOverlay(entry, oosTs.dates[0]);
+    }
+
+    entry.chart.timeScale().fitContent();
   }
 
-  function renderRollingSharpe(dates, sharpe) {
-    destroyChart('sharpe');
-    const c = ensureChart(hosts.sharpe, 'sharpe', 'baseline', {
+  function renderRollingSharpe(isTs, oosTs) {
+    const entry = makeChart(hosts.sharpe, 'sharpe');
+    if (!entry) return;
+
+    // Use a baseline series for IS so we keep the green/red split around 0.
+    const isSeries = entry.chart.addBaselineSeries({
       baseValue: { type: 'price', price: 0 },
       topLineColor: '#39d353',
       topFillColor1: 'rgba(57,211,83,0.3)',
@@ -138,12 +230,24 @@ export function createCharts(container) {
       bottomFillColor2: 'rgba(255,107,107,0.3)',
       lineWidth: 2,
     });
-    if (!c) return;
-    c.series.setData(pairData(dates, sharpe));
-    c.chart.timeScale().fitContent();
+    isSeries.setData(pairData(isTs.dates, isTs.rolling_sharpe));
+    entry.series.push(isSeries);
+
+    if (oosTs && oosTs.dates && oosTs.dates.length) {
+      const oosSeries = entry.chart.addLineSeries({
+        color: '#a78bfa', lineWidth: 2,
+      });
+      oosSeries.setData(pairData(oosTs.dates, oosTs.rolling_sharpe));
+      entry.series.push(oosSeries);
+      ensureOverlay(entry, oosTs.dates[0]);
+    }
+
+    entry.chart.timeScale().fitContent();
   }
 
-  function renderReturnsHistogram(returns) {
+  // ---------- Histogram (combined IS + OOS) ----------
+
+  function renderReturnsHistogram(isTs, oosTs) {
     const canvas = hosts.histogram;
     const dpr = window.devicePixelRatio || 1;
     const cssW = canvas.clientWidth;
@@ -154,10 +258,11 @@ export function createCharts(container) {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    const clean = returns.filter((v) => v != null && !Number.isNaN(v)).map(Number);
+    const all = [...(isTs.daily_returns || []), ...((oosTs && oosTs.daily_returns) || [])];
+    const clean = all.filter((v) => v != null && !Number.isNaN(v)).map(Number);
     if (clean.length === 0) return;
 
-    const binPct = 0.5; // 0.5%
+    const binPct = 0.5;
     const binSize = binPct / 100;
     const minR = Math.min(...clean);
     const maxR = Math.max(...clean);
@@ -176,7 +281,6 @@ export function createCharts(container) {
     const plotH = cssH - padT - padB;
     const bw = plotW / nBins;
 
-    // y-axis baseline
     ctx.strokeStyle = '#30363d';
     ctx.beginPath();
     ctx.moveTo(padL, cssH - padB);
@@ -197,7 +301,6 @@ export function createCharts(container) {
       ctx.fillRect(x, y, Math.max(1, bw - 1), h);
     }
 
-    // zero line
     if (lo < 0 && hi > 0) {
       const xZero = padL + ((-lo) / (hi - lo)) * plotW;
       ctx.strokeStyle = 'rgba(230,237,243,0.5)';
@@ -209,7 +312,6 @@ export function createCharts(container) {
       ctx.setLineDash([]);
     }
 
-    // x-axis labels (lo, 0, hi)
     ctx.fillStyle = '#8b949e';
     ctx.font = '10px JetBrains Mono, monospace';
     ctx.textBaseline = 'top';
@@ -219,9 +321,11 @@ export function createCharts(container) {
     ctx.fillText((hi * 100).toFixed(1) + '%', cssW - padR, cssH - padB + 6);
   }
 
+  // ---------- Monthly heatmap ----------
+
   function colorForReturn(r, scale = 0.05) {
     const clamped = Math.max(-scale, Math.min(scale, r));
-    const intensity = Math.abs(clamped) / scale; // 0..1
+    const intensity = Math.abs(clamped) / scale;
     if (clamped < 0)
       return `rgba(255,107,107,${0.15 + 0.7 * intensity})`;
     return `rgba(57,211,83,${0.15 + 0.7 * intensity})`;
@@ -241,7 +345,6 @@ export function createCharts(container) {
     }
     const years = Object.keys(byYear).map(Number).sort((a, b) => a - b);
 
-    // header row: months
     const header = document.createElement('div');
     header.className = 'heatmap-row';
     header.appendChild(makeCell('', 'year-label'));
@@ -281,15 +384,13 @@ export function createCharts(container) {
     ctx.clearRect(0, 0, hosts.histogram.width, hosts.histogram.height);
   }
 
-  function setData(timeseries, monthlyReturns) {
-    if (!timeseries) {
-      clear();
-      return;
-    }
-    renderEquityCurve(timeseries.dates, timeseries.cumulative_pnl);
-    renderDrawdown(timeseries.dates, timeseries.drawdown);
-    renderRollingSharpe(timeseries.dates, timeseries.rolling_sharpe);
-    renderReturnsHistogram(timeseries.daily_returns);
+  function setData(isTs, monthlyReturns, opts = {}) {
+    if (!isTs) { clear(); return; }
+    const oosTs = opts.oos_timeseries || null;
+    renderEquityCurve(isTs, oosTs);
+    renderDrawdown(isTs, oosTs);
+    renderRollingSharpe(isTs, oosTs);
+    renderReturnsHistogram(isTs, oosTs);
     renderMonthlyHeatmap(monthlyReturns);
   }
 

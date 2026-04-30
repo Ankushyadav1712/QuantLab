@@ -19,6 +19,11 @@ class SimulationConfig:
     booksize: float = 20_000_000
     transaction_cost_bps: float = 5.0
     decay: int = 0
+    # In/out-of-sample split: oos_split fraction of dates is held out as the
+    # last block.  When run_oos is False, the whole window is treated as IS
+    # (returned in the tuple's first slot, OOS slot is None).
+    oos_split: float = 0.3
+    run_oos: bool = True
 
 
 @dataclass
@@ -39,8 +44,14 @@ class Backtester:
 
     def run(
         self, alpha_matrix: pd.DataFrame, config: SimulationConfig
-    ) -> BacktestResult:
-        # 1. Filter to universe + date range
+    ) -> tuple[BacktestResult, BacktestResult | None]:
+        """Run the backtest, optionally split into in-sample / out-of-sample.
+
+        Returns ``(is_result, oos_result)``.  When ``config.run_oos`` is False,
+        ``oos_result`` is None and ``is_result`` covers the full window — same
+        behavior the engine had before this method was tuple-returning.
+        """
+        # 1. Universe + date filter (applies to both halves identically)
         cols = [t for t in config.universe if t in alpha_matrix.columns]
         if not cols:
             raise ValueError(
@@ -58,7 +69,7 @@ class Backtester:
                 "Alpha matrix is empty after applying date/universe filter"
             )
 
-        # 2. Drop dates where >50% of stocks have NaN alpha
+        # 2. Drop dates with >50% NaN — applies to both halves identically
         nan_frac = alpha.isna().sum(axis=1) / len(alpha.columns)
         alpha = alpha.loc[nan_frac <= 0.5]
 
@@ -67,25 +78,54 @@ class Backtester:
                 "All dates dropped: every row had >50% NaN alpha"
             )
 
+        if not config.run_oos:
+            return self._run_pipeline(alpha, config), None
+
+        # 3. Split by row-count (date count, not calendar year)
+        n = len(alpha)
+        split_idx = int(n * (1.0 - config.oos_split))
+        # Guard against degenerate splits
+        if split_idx <= 0 or split_idx >= n:
+            return self._run_pipeline(alpha, config), None
+
+        is_alpha = alpha.iloc[:split_idx]
+        oos_alpha = alpha.iloc[split_idx:]
+
+        is_result = self._run_pipeline(is_alpha, config)
+        oos_result = self._run_pipeline(oos_alpha, config)
+        return is_result, oos_result
+
+    # ------------------------------------------------------------------
+    # The signal-→-PnL pipeline that runs identically on each split.
+    # Assumes its caller has already done the universe + date filter and
+    # the >50%-NaN-row drop.
+    # ------------------------------------------------------------------
+
+    def _run_pipeline(
+        self, alpha: pd.DataFrame, config: SimulationConfig
+    ) -> BacktestResult:
+        if alpha.empty:
+            raise ValueError("Empty alpha slice passed to pipeline")
+
         # Optional decay before trading
         if config.decay and config.decay > 0:
             alpha = ops.decay_linear(alpha, config.decay)
 
-        # 3. Neutralization
+        # Neutralization
         alpha = self._neutralize(alpha, config.neutralization)
 
-        # 5. Normalize to fractional weights (sum of abs ≈ 1 per row)
+        # Normalize to fractional weights (sum of abs ≈ 1 per row)
         abs_sum = alpha.abs().sum(axis=1)
         abs_sum = abs_sum.replace(0, np.nan)
         weights = alpha.div(abs_sum, axis=0).fillna(0.0)
 
-        # 4. Truncation: cap each fractional weight at ±truncation
+        # Truncation: cap each fractional weight at ±truncation
         weights = weights.clip(lower=-config.truncation, upper=config.truncation)
 
-        # 6. Position sizing — scale to dollar positions
+        # Position sizing — scale to dollar positions
         positions = weights * config.booksize
 
-        # 7. Daily PnL: yesterday's dollar position × today's return
+        # Daily PnL: yesterday's dollar position × today's return
         if "returns" not in self.data:
             raise ValueError("data['returns'] is required to compute PnL")
         returns = self.data["returns"].reindex(
@@ -94,7 +134,7 @@ class Backtester:
         stock_pnl = positions.shift(1) * returns
         gross_pnl = stock_pnl.sum(axis=1, skipna=True)
 
-        # 8. Transaction costs
+        # Transaction costs
         turnover = (positions - positions.shift(1)).abs().sum(axis=1, skipna=True)
         cost = turnover * config.transaction_cost_bps / 10_000.0
         net_pnl = gross_pnl - cost

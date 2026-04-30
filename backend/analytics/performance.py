@@ -158,4 +158,69 @@ class PerformanceAnalytics:
             "rolling_sharpe": _safe_list(rolling_sharpe.tolist()),
             "monthly_returns": monthly_returns,
             "drawdown_series": _safe_list(drawdown.tolist()),
+            # Date range carried forward so compare_is_oos can build period
+            # labels without needing the original BacktestResult.
+            "start_date": result.dates[0] if result.dates else None,
+            "end_date": result.dates[-1] if result.dates else None,
+        }
+
+    def compare_is_oos(
+        self, is_metrics: dict[str, Any], oos_metrics: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Diagnose whether OOS performance has decayed from IS.
+
+        Returns sharpe/return decay (positive = OOS worse than IS) and a
+        human-readable label / overfitting flag for UI use.
+        """
+        is_sharpe = is_metrics.get("sharpe") or 0.0
+        oos_sharpe = oos_metrics.get("sharpe") or 0.0
+        is_return = is_metrics.get("annual_return") or 0.0
+        oos_return = oos_metrics.get("annual_return") or 0.0
+
+        sharpe_decay = (
+            (is_sharpe - oos_sharpe) / abs(is_sharpe)
+            if is_sharpe not in (0, 0.0)
+            else 0.0
+        )
+        return_decay = (
+            (is_return - oos_return) / abs(is_return)
+            if is_return not in (0, 0.0)
+            else 0.0
+        )
+
+        overfitting_flag = bool(sharpe_decay > 0.5 or oos_sharpe < 0)
+
+        # The decay-based label assumes the IS Sharpe is positive.  If OOS
+        # actually loses money it doesn't matter whether decay is small —
+        # the alpha is unusable and should be flagged accordingly.
+        if oos_sharpe < 0:
+            label = "Negative OOS — alpha lost money out-of-sample"
+            severity = "severe"
+        elif sharpe_decay < 0.2:
+            label = "Robust — OOS performance close to IS"
+            severity = "robust"
+        elif sharpe_decay < 0.4:
+            label = "Moderate decay — some overfitting likely"
+            severity = "moderate"
+        elif sharpe_decay < 0.6:
+            label = "High decay — likely overfit, use with caution"
+            severity = "high"
+        else:
+            label = "Severe overfit — alpha does not generalize"
+            severity = "severe"
+
+        return {
+            "sharpe_decay": _safe_float(sharpe_decay),
+            "return_decay": _safe_float(return_decay),
+            "overfitting_flag": overfitting_flag,
+            "overfitting_label": label,
+            "severity": severity,
+            "is_period": {
+                "start": is_metrics.get("start_date"),
+                "end": is_metrics.get("end_date"),
+            },
+            "oos_period": {
+                "start": oos_metrics.get("start_date"),
+                "end": oos_metrics.get("end_date"),
+            },
         }

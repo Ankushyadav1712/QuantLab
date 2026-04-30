@@ -8,11 +8,21 @@ from pydantic import BaseModel, Field
 class SimulationRequest(BaseModel):
     expression: str
     settings: dict[str, Any] | None = None
+    # When True (default), the backtester splits the date range into a 70/30
+    # IS/OOS pair and the response carries both halves.  When False, only the
+    # IS slot is populated (covering the full window) and OOS fields are null.
+    run_oos: bool = True
 
 
 class SimulationResponse(BaseModel):
-    metrics: dict[str, Any]
-    timeseries: dict[str, Any]
+    # Primary IS/OOS shape.  is_* fields are always populated; oos_* are null
+    # when run_oos was False (or the split was degenerate).
+    is_metrics: dict[str, Any]
+    oos_metrics: dict[str, Any] | None = None
+    is_timeseries: dict[str, Any]
+    oos_timeseries: dict[str, Any] | None = None
+    overfitting_analysis: dict[str, Any] | None = None
+
     monthly_returns: list[list[Any]]
     expression: str
     settings: dict[str, Any]

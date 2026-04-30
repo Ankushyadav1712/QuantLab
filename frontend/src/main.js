@@ -327,6 +327,16 @@ document.addEventListener('keydown', (e) => {
 
 function renderResponse(resp) {
   lastResponse = resp;
-  dashboard.setMetrics(resp.metrics);
-  charts.setData(resp.timeseries, resp.monthly_returns);
+  // New shape carries IS/OOS pairs.  Old saved-alpha records (pre-OOS) used
+  // flat `metrics`/`timeseries` keys — fall back to those so loading legacy
+  // alphas from the sidebar still renders the dashboard.
+  const isMetrics = resp.is_metrics || resp.metrics || null;
+  const isTs = resp.is_timeseries || resp.timeseries || null;
+  dashboard.setMetrics(isMetrics, {
+    oos_metrics: resp.oos_metrics || null,
+    overfitting_analysis: resp.overfitting_analysis || null,
+  });
+  charts.setData(isTs, resp.monthly_returns, {
+    oos_timeseries: resp.oos_timeseries || null,
+  });
 }
