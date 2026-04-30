@@ -98,12 +98,48 @@ coverage/
 .pnpm-store/
 
 # ---------- Env / secrets ----------
+# dotenv files (never commit; .example / .sample are templates and OK)
 .env
 .env.*
+*.env
+.envrc
 !.env.example
 !.env.sample
+
+# Generic secret / credential files
+secrets
+secrets.*
+*secrets*.json
+*secrets*.yml
+*secrets*.yaml
+*secrets*.txt
+credentials
+credentials.*
+*credentials*.json
+*credentials*.yml
+*credentials*.yaml
+
+# Keys / certs
 *.pem
 *.key
+*.crt
+*.cer
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.gpg
+*.asc
+
+# Cloud / SaaS auth artifacts
+.aws/
+.gcloud/
+service-account*.json
+gcp-key*.json
+firebase-key*.json
+*-service-account*.json
 
 # ---------- Editors / OS ----------
 .vscode/

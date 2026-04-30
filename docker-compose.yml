@@ -1,0 +1,36 @@
+# `docker-compose up --build` brings up both services.
+# - backend bind-mounts the parquet cache so a host-side download survives
+#   container restarts (and saves a 30s yfinance round-trip on every boot).
+# - frontend bakes VITE_API_URL into the bundle at build time; override via
+#   `VITE_API_URL=https://api.example.com docker-compose build` for prod.
+
+services:
+  backend:
+    build: ./backend
+    container_name: quantlab-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data/cache:/app/data/cache
+    environment:
+      ENVIRONMENT: development
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2).status==200 else 1)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    container_name: quantlab-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}

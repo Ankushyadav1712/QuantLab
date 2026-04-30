@@ -13,9 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from analytics.performance import PerformanceAnalytics, _safe_float, _safe_list
 from config import (
+    ALLOWED_ORIGINS,
     DATA_END,
     DATA_START,
     DEFAULT_BOOKSIZE,
+    ENVIRONMENT,
     SECTOR_MAP,
     UNIVERSE,
 )
@@ -137,9 +139,12 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="QuantLab", lifespan=lifespan)
 
+# Dev keeps "*" so a browser can hit the API from any localhost variant or
+# from a LAN box; production tightens to the configured allow-list.
+_cors_origins = ["*"] if ENVIRONMENT != "production" else ALLOWED_ORIGINS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

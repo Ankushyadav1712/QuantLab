@@ -1,4 +1,6 @@
-export const BASE_URL = 'http://localhost:8000';
+// `VITE_API_URL` is inlined at build time (Vite reads VITE_* env vars).
+// Local dev defaults to localhost:8000; Docker / production builds override.
+export const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 async function request(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };

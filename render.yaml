@@ -1,0 +1,37 @@
+# Render.com deployment manifest.
+# Two services: a Python web service for the FastAPI backend and a static
+# site for the Vite-built frontend.  After first deploy, copy the backend's
+# auto-generated URL into the frontend service's VITE_API_URL env var so the
+# rebuild bakes it into the bundle.
+
+services:
+  - type: web
+    name: quantlab-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    # The repo's imports are flat (`from data.fetcher import ...`), so we run
+    # uvicorn with --app-dir instead of `backend.main:app` to avoid having
+    # to repath every internal import.
+    startCommand: uvicorn main:app --app-dir backend --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: 3.11.10
+    healthCheckPath: /health
+
+  - type: web
+    name: quantlab-frontend
+    runtime: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    envVars:
+      # After first backend deploy, replace this with the actual backend URL
+      # (e.g. https://quantlab-backend.onrender.com) and trigger a rebuild.
+      - key: VITE_API_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

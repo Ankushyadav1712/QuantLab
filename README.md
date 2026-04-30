@@ -1,49 +1,193 @@
 # QuantLab
 
-A quantitative backtesting platform: FastAPI backend + Vite (vanilla JS) frontend.
+A quantitative backtesting platform for cross-sectional alpha research on US equities. Write expressions in a small DSL (`-rank(delta(close, 5)) * ts_std(returns, 20)`), pipe them through neutralization → truncation → sizing → PnL, get Sharpe / drawdown / turnover charts back in under a second.
 
-## Layout
+## Project overview
+
+- **Universe** — 50 liquid S&P 100 names with GICS sectors (configurable).
+- **Data** — daily OHLCV from yfinance, parquet-cached (24h TTL). 32 fields available in expressions: 7 base (open/high/low/close/volume/returns/vwap) + 25 derived (momentum, vol, liquidity, candle structure, etc.).
+- **Engine** — recursive-descent parser → AST evaluator → vectorised pandas backtester. 23 operators (rolling, cross-sectional, arithmetic, conditional).
+- **Backtest** — neutralization (`none`/`market`/`sector`), truncation, booksize sizing, transaction costs in bps, optional decay.
+- **Analytics** — Sharpe, CAGR, Sortino, Calmar, max drawdown, turnover, fitness, win rate, profit factor, beta vs SPY, information ratio, rolling 63-day Sharpe, monthly returns heatmap.
+- **Persistence** — SQLite for saved alphas + cached results; multi-blend and pairwise-correlation endpoints across saved alphas.
+
+## Architecture
+
+```
+                ┌────────────────────────────────────────┐
+                │          Browser (Vite app)            │
+                │  editor • dashboard • charts • sidebar │
+                └────────────────┬───────────────────────┘
+                          fetch  │ JSON (CORS)
+                                 ▼
+       ┌──────────────────────────────────────────────────────┐
+       │                FastAPI  (uvicorn :8000)              │
+       │  /api/simulate  /api/validate  /api/operators        │
+       │  /api/alphas (CRUD, multi-blend, correlations)       │
+       │  /api/data/preview  /api/universe   /health          │
+       └────┬─────────────────┬───────────────────┬───────────┘
+            │                 │                   │
+            ▼                 ▼                   ▼
+   engine/parser.py    engine/backtester.py   db/database.py
+   engine/evaluator.py analytics/perf.py      (SQLite alphas)
+   engine/operators.py
+            │
+            ▼
+   data/fetcher.py  ──▶  yfinance  →  data/cache/*.parquet
+                          (50 tickers × 25 derived fields)
+```
+
+## Tech stack
+
+| Layer | Tool |
+|---|---|
+| Backend | FastAPI, uvicorn (Python 3.11) |
+| Numerics | pandas, numpy, pyarrow |
+| Data | yfinance, parquet cache |
+| Persistence | SQLite via aiosqlite |
+| Frontend | Vite + Vanilla JS (no framework) |
+| Charts | TradingView Lightweight Charts (CDN, v4.2.3) + Canvas + CSS grid |
+| Testing | pytest (93 tests) |
+| Container | Docker (multi-stage), nginx for static frontend |
+| Deploy | Render (web + static services) |
+
+## Quick start (Docker)
+
+Requires Docker Desktop running.
+
+```bash
+docker compose up --build
+```
+
+- Frontend: http://localhost
+- Backend API: http://localhost:8000  (Swagger UI at /docs)
+
+The backend's parquet cache is bind-mounted from `backend/data/cache/`, so the first boot's yfinance round-trip (~30 s for 50 tickers) survives container restarts.
+
+## Quick start (local, no Docker)
+
+```bash
+# backend
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python scripts/download_data.py            # ~30 s, populates parquet cache
+uvicorn main:app --reload                  # http://localhost:8000
+
+# frontend (separate shell)
+cd frontend
+npm install
+npm run dev                                # http://localhost:5173
+```
+
+## API endpoints
+
+| Method | Path | What it does |
+|---|---|---|
+| GET  | `/health` | liveness probe |
+| GET  | `/api/universe` | tickers + GICS sector map |
+| GET  | `/api/operators` | 23 operators + 32 fields with descriptions |
+| POST | `/api/validate` | `{expression}` → `{valid, error}` (pure parse check) |
+| POST | `/api/simulate` | `{expression, settings}` → metrics + timeseries + monthly_returns |
+| POST | `/api/alphas` | save expression + run results to SQLite |
+| GET  | `/api/alphas` | list saved alphas (newest first) |
+| GET  | `/api/alphas/{id}` | full record incl. parsed `result_json` |
+| DELETE | `/api/alphas/{id}` | delete |
+| POST | `/api/alphas/multi-blend` | `[{expression, weight}…]` → simulate the weighted-sum alpha |
+| POST | `/api/alphas/correlations` | pairwise Pearson on saved alphas' daily returns |
+| GET  | `/api/data/preview?ticker=AAPL` | last 30 rows for that ticker, all 32 fields |
+
+Browse the auto-generated Swagger UI at `/docs` for full schemas and a "Try it out" button.
+
+## Example alphas
+
+All measured on the 50-ticker S&P 100 universe, 2019-01 → 2024-12, $20M booksize, 5 bps transaction cost. `decay_linear(...)` is a left-weighted moving average that lowers turnover.
+
+| Expression | Neutralization | Sharpe | AnnRet | MaxDD | Turnover/day |
+|---|---|---|---|---|---|
+| `decay_linear(rank(momentum_20), 20)` | none | **1.02** | 13.7% | -24% | $0.74M |
+| `rank(momentum_20) / (realized_vol + 0.001)` | none | 0.96 | 12.3% | -23% | $2.86M |
+| `rank(close_to_high_252)` | none | 0.88 | 12.6% | -27% | $1.87M |
+| `decay_linear(rank(close_to_high_252), 20)` | none | 0.89 | 12.9% | -29% | $0.39M |
+| `rank(delta(close, 5))` | market | -0.90 | -7.9% | -40% | $11.1M |
+| `-rank(delta(close, 5))` (5d reversal) | market | -1.05 | -9.5% | -51% | $11.1M |
+| `rank(volume) * rank(returns)` | market | -1.33 | -13.2% | -62% | (high) |
+
+The pattern is: **long-only momentum** clears costs on this universe + window; **market-neutral cross-sectional** rank alphas systematically short the mega-caps that dominated 2019-2024 and bleed.
+
+## Deployment
+
+### Render (recommended, free tier works)
+
+1. Push the repo to GitHub.
+2. In Render, "New" → "Blueprint" → point at the repo.
+3. `render.yaml` provisions two services automatically:
+   - `quantlab-backend` (Python web service)
+   - `quantlab-frontend` (static site)
+4. After the backend deploys, copy its URL (e.g. `https://quantlab-backend.onrender.com`) into the frontend service's `VITE_API_URL` env var, then trigger a manual rebuild so Vite re-bakes the URL into the bundle.
+
+Free-tier note: services sleep after 15 min idle. First request after sleep takes ~30 s while yfinance re-downloads (fresh container = empty cache, no host volume).
+
+### Docker on a single host
+
+```bash
+# Custom backend URL baked into the frontend bundle
+VITE_API_URL=https://api.example.com docker compose build
+docker compose up -d
+```
+
+### Manual
+
+Anything that runs `pip install + uvicorn` and serves a static `dist/` directory works. The `data/cache/` directory must be writable; mount it as a volume for persistence.
+
+## Repository layout
 
 ```
 QuantLab/
-├── backend/          FastAPI service, data layer, scripts
-│   ├── config.py
-│   ├── main.py
+├── backend/
+│   ├── main.py                      FastAPI app + endpoints
+│   ├── config.py                    UNIVERSE, SECTOR_MAP, env-aware paths
 │   ├── data/
-│   │   ├── fetcher.py
+│   │   ├── fetcher.py               yfinance + 32-field matrix builder
 │   │   └── universe.py
+│   ├── engine/
+│   │   ├── parser.py                tokenizer + recursive-descent parser
+│   │   ├── operators.py             23 ops (ts/cs/arithmetic/conditional)
+│   │   ├── evaluator.py             AST walker
+│   │   └── backtester.py            run() pipeline
+│   ├── analytics/performance.py     Sharpe, CAGR, Sortino, …
+│   ├── models/schemas.py            Pydantic request/response shapes
+│   ├── db/                          aiosqlite, migrations
 │   ├── scripts/
-│   │   └── download_data.py
+│   │   ├── download_data.py         pre-populate parquet cache
+│   │   └── verify_alphas.py         CLI run of canonical expressions
+│   ├── tests/                       pytest (93 tests)
+│   ├── Dockerfile + .dockerignore
 │   └── requirements.txt
-├── frontend/         Vite + Vanilla JS app
+├── frontend/
+│   ├── index.html
+│   ├── src/
+│   │   ├── main.js                  layout, modal helper, wiring
+│   │   ├── api.js                   fetch wrappers
+│   │   ├── styles/index.css         design system
+│   │   └── components/
+│   │       ├── editor.js            highlight + validate + settings
+│   │       ├── dashboard.js         6 metric cards, animated counters
+│   │       ├── charts.js            equity, drawdown, sharpe, hist, heatmap
+│   │       ├── sidebar.js           saved alphas, blend, correlations
+│   │       └── correlation.js       pairwise heatmap
+│   ├── nginx.conf                   SPA fallback config
+│   ├── Dockerfile + .dockerignore
+│   └── package.json
+├── docker-compose.yml
+├── render.yaml
 └── README.md
 ```
 
-## Backend
+## Tests
 
 ```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python scripts/download_data.py     # populates data/cache/*.parquet
-uvicorn main:app --reload           # http://127.0.0.1:8000
+backend/.venv/bin/pytest backend/tests/ -v
 ```
 
-Health check: `GET http://127.0.0.1:8000/health` → `{"status": "ok"}`.
-
-### Data layer
-
-- `config.UNIVERSE` — 50 liquid S&P 100 tickers.
-- `config.SECTOR_MAP` — GICS sector for each ticker.
-- `data.fetcher.DataFetcher`
-  - `download_universe(tickers, start, end)` — yfinance OHLCV, parquet-cached per ticker (24h TTL).
-  - `get_data_matrix(field)` — `(dates × tickers)` matrix for `open/high/low/close/volume/returns/vwap`.
-- `data.universe.UniverseManager` — `get_tickers()`, `get_sector(ticker)`.
-
-## Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
+93 tests covering parser (operators + invalid syntax + precedence), operators (synthetic 100×10 fixture against pandas), backtester (constant-alpha invariants, turnover ≥ 0, cost-vs-zero-cost), and the API (TestClient-based).

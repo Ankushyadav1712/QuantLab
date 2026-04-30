@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
 UNIVERSE = [
     "AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V",
@@ -61,10 +64,24 @@ SECTOR_MAP = {
     "T": "Communication Services",
 }
 
-DATA_START = "2019-01-01"
+# Production uses a smaller window to keep cold-start data downloads fast on
+# free-tier hosts; development gets the full 6-year history.
+DATA_START = "2020-01-01" if ENVIRONMENT == "production" else "2019-01-01"
 DATA_END = "2024-12-31"
 
 CACHE_DIR = Path(__file__).parent / "data" / "cache"
 
 DEFAULT_CAPITAL = 10_000_000
 DEFAULT_BOOKSIZE = 20_000_000
+
+# CORS allow-list. In development we additionally permit "*" so that loading
+# the bundle from any host (e.g. localhost variants, network LAN) works.
+ALLOWED_ORIGINS = [
+    "http://localhost",
+    "http://localhost:80",
+    "http://localhost:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
+]
