@@ -402,26 +402,62 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
   async function runValidate() {
     const expr = textarea.value.trim();
     if (!expr) {
-      setStatus('idle', '');
+      setStatus('idle', '', []);
       return;
     }
-    setStatus('checking', 'checking…');
+    setStatus('checking', 'checking…', []);
     if (validateAbort) validateAbort.abort();
     validateAbort = new AbortController();
     try {
       const res = await api.validateExpression(expr);
-      if (res.valid) setStatus('valid', '✓ valid expression');
-      else setStatus('invalid', '✗ ' + (res.error || 'invalid'));
+      const diags = res.diagnostics || [];
+      if (res.valid) {
+        const warns = diags.filter((d) => d.severity === 'warning');
+        if (warns.length > 0) {
+          setStatus('warn', `⚠ ${warns.length} warning${warns.length > 1 ? 's' : ''}`, diags);
+        } else {
+          setStatus('valid', '✓ valid expression', []);
+        }
+      } else {
+        setStatus('invalid', '✗ ' + (res.error || 'invalid'), diags);
+      }
     } catch (e) {
-      setStatus('invalid', '✗ ' + e.message);
+      setStatus('invalid', '✗ ' + e.message, []);
     }
   }
 
-  function setStatus(kind, text) {
-    statusEl.classList.remove('valid', 'invalid');
+  function setStatus(kind, text, diagnostics) {
+    statusEl.classList.remove('valid', 'invalid', 'warn');
     if (kind === 'valid') statusEl.classList.add('valid');
-    if (kind === 'invalid') statusEl.classList.add('invalid');
-    statusEl.textContent = text;
+    else if (kind === 'invalid') statusEl.classList.add('invalid');
+    else if (kind === 'warn') statusEl.classList.add('warn');
+
+    if (!diagnostics || diagnostics.length === 0) {
+      statusEl.textContent = text;
+      return;
+    }
+    // Render diagnostics as a list under the headline
+    statusEl.innerHTML = `
+      <div class="status-headline">${escapeHtml(text)}</div>
+      <ul class="status-diagnostics">
+        ${diagnostics
+          .map((d) => `
+            <li class="diag-${d.severity}">
+              <span class="diag-tag">${d.severity}</span>
+              <span class="diag-op code">${escapeHtml(d.op || '')}</span>
+              ${escapeHtml(d.message || '')}
+            </li>
+          `)
+          .join('')}
+      </ul>
+    `;
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
   }
 
   // Run button

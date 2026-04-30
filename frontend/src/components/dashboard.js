@@ -77,12 +77,16 @@ function fmtPeriod(p) {
 export function createDashboard(container) {
   container.classList.add('dashboard-wrap');
   container.innerHTML = `
+    <div data-role="data-quality" class="data-quality-banner" style="display:none;"></div>
     <div data-role="metrics-grid" class="dashboard"></div>
     <div data-role="is-oos" class="is-oos-section glass" style="display:none;"></div>
+    <div data-role="factor-decomp" class="factor-section glass" style="display:none;"></div>
   `;
 
+  const dataQualityEl = container.querySelector('[data-role="data-quality"]');
   const metricsGrid = container.querySelector('[data-role="metrics-grid"]');
   const isOosEl = container.querySelector('[data-role="is-oos"]');
+  const factorEl = container.querySelector('[data-role="factor-decomp"]');
 
   // Build the 6 metric cards
   const cards = {};
@@ -168,6 +172,143 @@ export function createDashboard(container) {
       isOosEl.style.display = 'none';
       isOosEl.innerHTML = '';
     }
+
+    const quality = opts.data_quality;
+    if (metrics && quality && quality.notes && quality.notes.length) {
+      renderDataQuality(quality);
+      dataQualityEl.style.display = '';
+    } else {
+      dataQualityEl.style.display = 'none';
+      dataQualityEl.innerHTML = '';
+    }
+
+    const decomp = opts.factor_decomposition;
+    if (metrics && decomp) {
+      renderFactorDecomp(decomp);
+      factorEl.style.display = '';
+    } else {
+      factorEl.style.display = 'none';
+      factorEl.innerHTML = '';
+    }
+  }
+
+  function renderFactorDecomp(d) {
+    const sigBadge = d.alpha_significant
+      ? '<span class="factor-sig good">significant (|t|>2)</span>'
+      : '<span class="factor-sig warn">not significant (|t|≤2)</span>';
+
+    const alphaPct = d.alpha_annualized != null
+      ? `${(d.alpha_annualized * 100).toFixed(2)}%`
+      : '—';
+    const alphaT = d.alpha_t_stat != null ? d.alpha_t_stat.toFixed(2) : '—';
+    const alphaTone =
+      d.alpha_annualized != null && d.alpha_significant
+        ? d.alpha_annualized > 0
+          ? 'good'
+          : 'bad'
+        : '';
+
+    const r2 = d.r_squared != null ? (d.r_squared * 100).toFixed(1) + '%' : '—';
+    const factorShare = d.factor_share != null
+      ? (d.factor_share * 100).toFixed(1) + '%'
+      : '—';
+
+    // Bar chart of factor loadings (β values)
+    const loadings = d.loadings || {};
+    const order = ['market', 'size', 'value', 'profitability', 'investment'];
+    const maxAbsBeta = Math.max(
+      0.1,
+      ...order.map((k) => Math.abs(loadings[k]?.beta ?? 0))
+    );
+
+    const factorRows = order
+      .map((key) => {
+        const item = loadings[key] || {};
+        const beta = item.beta;
+        const t = item.t_stat;
+        const sig = t != null && Math.abs(t) > 2;
+        const pct = beta == null ? 0 : (beta / maxAbsBeta) * 50; // ±50% of bar width
+        const tone = beta == null ? '' : beta >= 0 ? 'pos' : 'neg';
+        const widthPct = Math.abs(pct);
+        const left = beta == null || beta >= 0 ? 50 : 50 - widthPct;
+        const niceLabel = key.charAt(0).toUpperCase() + key.slice(1);
+        return `
+          <div class="factor-row">
+            <div class="factor-name">${niceLabel}</div>
+            <div class="factor-bar">
+              <div class="factor-bar-axis"></div>
+              <div class="factor-bar-fill ${tone}"
+                   style="left:${left}%; width:${widthPct}%;"></div>
+            </div>
+            <div class="factor-beta">
+              ${beta == null ? '—' : (beta >= 0 ? '+' : '') + beta.toFixed(3)}
+            </div>
+            <div class="factor-tstat ${sig ? 'sig' : ''}">
+              ${t == null ? '' : `t=${t.toFixed(2)}`}
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    factorEl.innerHTML = `
+      <div class="factor-header">
+        <div class="factor-title">Fama-French 5-factor decomposition</div>
+        <div class="factor-period">${d.period?.start ?? '—'} → ${d.period?.end ?? '—'}  ·  ${d.sample_size} obs</div>
+      </div>
+
+      <div class="factor-summary">
+        <div class="factor-stat">
+          <div class="factor-stat-label">Pure alpha (annualized)</div>
+          <div class="factor-stat-value ${alphaTone}">${alphaPct}</div>
+          <div class="factor-stat-sub">t = ${alphaT} · ${sigBadge}</div>
+        </div>
+        <div class="factor-stat">
+          <div class="factor-stat-label">Variance explained by factors</div>
+          <div class="factor-stat-value">${factorShare}</div>
+          <div class="factor-stat-sub">R² = ${r2}</div>
+        </div>
+      </div>
+
+      <div class="factor-bars">${factorRows}</div>
+
+      <div class="factor-explainer">
+        <strong>What this means:</strong> the headline Sharpe is partly explained by
+        exposure to known risk premia. <em>Pure alpha</em> is the residual return after
+        regressing out market, size, value, profitability, and investment factors —
+        i.e. the part of your return that <em>isn't</em> just standard factor exposure.
+        Statistically significant pure alpha (|t|&nbsp;&gt;&nbsp;2) is the only number
+        most quant firms accept as real edge.
+      </div>
+    `;
+  }
+
+  function renderDataQuality(q) {
+    const inflation =
+      q.expected_sharpe_inflation == null
+        ? ''
+        : ` <span class="data-quality-pill">Sharpe ↑ ~${(+q.expected_sharpe_inflation).toFixed(2)}</span>`;
+    const notes = (q.notes || [])
+      .map((n) => `<li>${escapeHtml(n)}</li>`)
+      .join('');
+    dataQualityEl.innerHTML = `
+      <details class="data-quality-details">
+        <summary>
+          <span class="data-quality-icon">ℹ️</span>
+          <strong>Data caveat — survivorship bias.</strong>
+          ${inflation}
+          <span class="data-quality-toggle">Show details</span>
+        </summary>
+        <ul class="data-quality-notes">${notes}</ul>
+      </details>
+    `;
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
   }
 
   function renderIsOos(isM, oosM, analysis) {

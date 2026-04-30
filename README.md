@@ -190,4 +190,22 @@ QuantLab/
 backend/.venv/bin/pytest backend/tests/ -v
 ```
 
-93 tests covering parser (operators + invalid syntax + precedence), operators (synthetic 100×10 fixture against pandas), backtester (constant-alpha invariants, turnover ≥ 0, cost-vs-zero-cost), and the API (TestClient-based).
+100+ tests covering parser (operators + invalid syntax + precedence), operators (synthetic 100×10 fixture against pandas), backtester (constant-alpha invariants, turnover ≥ 0, cost-vs-zero-cost, IS/OOS partitioning), the look-ahead-bias linter, and the API (TestClient-based).
+
+## Known limitations / drawbacks
+
+These are honest gaps, not promises.  The platform's metrics should be read in light of them.
+
+- **Survivorship bias.** The universe is the *current* S&P 100, not point-in-time index membership.  Names that were in the index in 2019 but got delisted, acquired, or removed by 2024 are absent.  Estimated Sharpe inflation: **0.1–0.3** for typical strategies.  Proper fix needs paid PIT data (CRSP / Norgate / Sharadar).  The dashboard surfaces this as a banner on every backtest.
+- **Naïve transaction cost model.** Flat bps regardless of trade size or stock liquidity.  Real cost ≈ half-spread + market impact (∝ √(trade_size / ADV)) + commission + borrow.  The platform has `adv20` as a field but doesn't use it for cost modeling — high-turnover alphas look better here than they would live.
+- **No execution-lag model.** Assumes signal-at-close = trade-at-close.  Real desks sign at close, trade at next open.  Adds 10–30 bps of slippage we ignore.
+- **No borrow cost on shorts.** Market-neutral strategies have a 1–3 % per-year cost we don't charge.
+- **Single 70/30 IS/OOS split**, not walk-forward.  One regime in OOS can pass or fail you by chance.  Walk-forward (rolling 12-month OOS windows) is the proper test.
+- **Daily resolution only.** Can't capture intraday signals or do anything tick-level.
+- **No fundamentals or alternative data.** Limits the ceiling of what alphas can be expressed.
+
+## Mitigations already shipped
+
+- ✅ **IS/OOS split** on every backtest with overfitting-decay verdict.
+- ✅ **Look-ahead-bias linter** — `delay(x, -1)` and `delta(x, -5)` are caught at parse time and rejected by `/api/simulate` with a 400.
+- ✅ **Data-quality banner** on the dashboard so the survivorship-bias caveat is visible alongside every reported Sharpe.

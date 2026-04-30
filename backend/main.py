@@ -11,6 +11,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from analytics.factor_decomp import FactorDecomposition
 from analytics.performance import PerformanceAnalytics, _safe_float, _safe_list
 from config import (
     ALLOWED_ORIGINS,
@@ -21,11 +22,13 @@ from config import (
     SECTOR_MAP,
     UNIVERSE,
 )
+from data.factors import download_ff5_daily
 from data.fetcher import ALL_FIELDS, DataFetcher
 from db.database import connect
 from db.migrations import init_db
 from engine.backtester import Backtester, SimulationConfig
 from engine.evaluator import AlphaEvaluator
+from engine.lint import lint_ast
 from engine.parser import Parser
 from models.schemas import (
     AlphaSaveRequest,
@@ -131,8 +134,14 @@ async def lifespan(_app: FastAPI):
         spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
     )
 
+    # Fama-French 5 factor returns (Mkt-RF, SMB, HML, RMW, CMA + RF) cached
+    # weekly.  Network failure is non-fatal — factor decomposition just gets
+    # skipped in /api/simulate if the DataFrame is empty.
+    ff5 = download_ff5_daily()
+
     _state["fetcher"] = fetcher
     _state["spy_returns"] = spy_returns
+    _state["ff5"] = ff5
     _state["data"] = {field: fetcher.get_data_matrix(field) for field in DATA_FIELDS}
     yield
 
@@ -260,15 +269,50 @@ def _build_response(
         # Combined monthly-returns heatmap spans both halves
         monthly_returns = is_monthly + oos_monthly
 
+    # Fama-French 5-factor decomposition on the full backtest window (IS+OOS
+    # if both, else just IS).  Tells the user how much of their headline
+    # Sharpe is just market-beta + size + value + profitability + investment.
+    ff5 = _state.get("ff5")
+    decomp_input_dates = list(is_timeseries["dates"])
+    decomp_input_returns = list(is_timeseries["daily_returns"])
+    if oos_timeseries:
+        decomp_input_dates += list(oos_timeseries["dates"])
+        decomp_input_returns += list(oos_timeseries["daily_returns"])
+    factor_decomp = (
+        FactorDecomposition().compute(decomp_input_returns, decomp_input_dates, ff5)
+        if ff5 is not None and not ff5.empty
+        else None
+    )
+
     return {
         "is_metrics": is_metrics,
         "oos_metrics": oos_metrics,
         "is_timeseries": is_timeseries,
         "oos_timeseries": oos_timeseries,
         "overfitting_analysis": overfitting,
+        "factor_decomposition": factor_decomp,
         "monthly_returns": monthly_returns,
         "expression": expression,
         "settings": _config_to_dict(cfg),
+        # Honest disclosure: this universe is *current* S&P 100, not
+        # point-in-time membership.  Backtests inherit survivorship bias
+        # because dropouts (delistings, M&A, index removals) aren't represented.
+        "data_quality": {
+            "survivorship_bias": True,
+            "universe_kind": "current_snapshot",
+            "expected_sharpe_inflation": 0.2,
+            "notes": [
+                "Universe is the *current* S&P 100, not point-in-time index "
+                "membership. Names that were in the index in 2019 but got "
+                "delisted, acquired, or removed by 2024 are absent from the "
+                "backtest.",
+                "This survivorship bias systematically inflates Sharpe by an "
+                "estimated 0.1–0.3 vs. a survivorship-free backtest. Treat "
+                "all reported metrics as upper bounds.",
+                "Fix requires paid PIT data (CRSP / Norgate / Sharadar). "
+                "Documented in README; see Drawbacks section.",
+            ],
+        },
     }
 
 
@@ -299,19 +343,50 @@ def get_operators():
 @app.post("/api/validate")
 def validate(req: ValidateRequest):
     try:
-        Parser().parse(req.expression)
-        return {"valid": True, "error": None}
+        ast = Parser().parse(req.expression)
     except ValueError as e:
-        return {"valid": False, "error": str(e)}
+        return {"valid": False, "error": str(e), "diagnostics": []}
+
+    diagnostics = lint_ast(ast)
+    has_lint_errors = any(d["severity"] == "error" for d in diagnostics)
+    return {
+        "valid": not has_lint_errors,
+        "error": (
+            next(d["message"] for d in diagnostics if d["severity"] == "error")
+            if has_lint_errors
+            else None
+        ),
+        # Full list of warnings + errors so the editor can render them inline.
+        "diagnostics": diagnostics,
+    }
 
 
 @app.post("/api/simulate")
 def simulate(req: SimulationRequest):
+    # Lint before evaluating so we catch look-ahead bias before any
+    # inflated-Sharpe number ever leaves the server.
+    try:
+        ast = Parser().parse(req.expression)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Expression error: {e}")
+
+    diagnostics = lint_ast(ast)
+    errors = [d for d in diagnostics if d["severity"] == "error"]
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Lint error: {errors[0]['message']}",
+        )
+
     alpha = _evaluate(req.expression)
     # The body's `run_oos` flag wins over anything inside `settings` so
     # callers can toggle the split without rebuilding their settings dict.
     cfg = _make_config(req.settings, run_oos=req.run_oos)
-    return _build_response(req.expression, alpha, cfg)
+    response = _build_response(req.expression, alpha, cfg)
+    # Surface any non-fatal lint warnings (long windows, zero shifts) so the
+    # frontend can show them next to the dashboard.
+    response["diagnostics"] = diagnostics
+    return response
 
 
 @app.post("/api/alphas/multi-blend")

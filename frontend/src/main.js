@@ -454,6 +454,8 @@ function renderResponse(resp) {
   dashboard.setMetrics(isMetrics, {
     oos_metrics: resp.oos_metrics || null,
     overfitting_analysis: resp.overfitting_analysis || null,
+    data_quality: resp.data_quality || null,
+    factor_decomposition: resp.factor_decomposition || null,
   });
   charts.setData(isTs, resp.monthly_returns, {
     oos_timeseries: resp.oos_timeseries || null,
