@@ -423,7 +423,9 @@ async def save_alpha(req: AlphaSaveRequest):
     alpha = _evaluate(req.expression)
     cfg = _make_config(req.settings)
     response = _build_response(req.expression, alpha, cfg)
-    metrics = response["metrics"]
+    # The IS/OOS refactor split `metrics` into `is_metrics` + `oos_metrics`;
+    # the persisted summary columns track the IS half (the always-present one).
+    metrics = response["is_metrics"]
     created_at = datetime.now(timezone.utc).isoformat()
 
     payload = json.dumps(response, default=str)

@@ -2,6 +2,7 @@
 // actions, delete buttons.
 
 import { api } from '../api.js';
+import { confirmDialog, toast } from '../ui/toast.js';
 
 const TRUNC = 40;
 
@@ -129,15 +130,23 @@ export function createSidebar(container) {
     });
     delBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!confirm(`Delete "${a.name}"?`)) return;
+      const ok = await confirmDialog({
+        title: `Delete "${a.name}"?`,
+        message: 'This removes the saved alpha and its backtest history. This cannot be undone.',
+        confirmLabel: 'Delete',
+        cancelLabel: 'Cancel',
+        danger: true,
+      });
+      if (!ok) return;
       try {
         await api.deleteAlpha(a.id);
         selected.delete(a.id);
         delete weights[a.id];
         await refresh();
         if (callbacks.onDelete) callbacks.onDelete(a.id);
+        toast(`Deleted "${a.name}"`, 'success', { duration: 2500 });
       } catch (err) {
-        alert('Delete failed: ' + err.message);
+        toast(err.message, 'error', { title: 'Delete failed' });
       }
     });
 

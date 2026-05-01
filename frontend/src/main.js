@@ -7,6 +7,7 @@ import { createDashboard } from './components/dashboard.js';
 import { createCharts } from './components/charts.js';
 import { createSidebar } from './components/sidebar.js';
 import { createCorrelation } from './components/correlation.js';
+import { toast } from './ui/toast.js';
 
 // ---------- Layout ----------
 
@@ -51,7 +52,7 @@ let lastResponse = null;
 editor.setOnRun(async () => {
   const expression = editor.getExpression();
   if (!expression) {
-    alert('Enter an expression first.');
+    toast('Enter an expression first.', 'warning');
     return;
   }
   const settings = editor.getSettings();
@@ -59,8 +60,9 @@ editor.setOnRun(async () => {
     const resp = await api.simulate(expression, settings);
     renderResponse(resp);
     editor.setSaveEnabled(true);
+    toast('Backtest complete', 'success', { duration: 2500 });
   } catch (e) {
-    alert('Simulation failed: ' + e.message);
+    toast(e.message, 'error', { title: 'Simulation failed', duration: 8000 });
   }
 });
 
@@ -80,7 +82,7 @@ sidebar.setOnLoad(async (id) => {
       editor.setSaveEnabled(false);
     }
   } catch (e) {
-    alert('Load failed: ' + e.message);
+    toast(e.message, 'error', { title: 'Load failed' });
   }
 });
 
@@ -98,7 +100,7 @@ sidebar.setOnBlend(async (items) => {
     );
     editor.setSaveEnabled(true);
   } catch (e) {
-    alert('Multi-blend failed: ' + e.message);
+    toast(e.message, 'error', { title: 'Multi-blend failed' });
   }
 });
 
@@ -109,7 +111,7 @@ sidebar.setOnCorrelate(async (ids) => {
     correlation.show(data);
     document.getElementById('correlation').scrollIntoView({ behavior: 'smooth' });
   } catch (e) {
-    alert('Correlations failed: ' + e.message);
+    toast(e.message, 'error', { title: 'Correlations failed' });
   }
 });
 
@@ -287,7 +289,7 @@ async function openOperatorDocs() {
       payload = await api.getOperators();
       cachedOperators = payload;
     } catch (e) {
-      alert('Could not load operators: ' + e.message);
+      toast(e.message, 'error', { title: 'Could not load operators' });
       return;
     }
   }
@@ -380,7 +382,7 @@ function openSaveModal(response) {
           const name = modal.querySelector('[data-role="name"]').value.trim();
           const notes = modal.querySelector('[data-role="notes"]').value.trim();
           if (!name) {
-            alert('Name required.');
+            toast('Name is required.', 'warning');
             return;
           }
           try {
@@ -393,8 +395,9 @@ function openSaveModal(response) {
             closeModal();
             await sidebar.refresh();
             editor.setSaveEnabled(false);
+            toast(`Saved as "${name}"`, 'success');
           } catch (e) {
-            alert('Save failed: ' + e.message);
+            toast(e.message, 'error', { title: 'Save failed' });
           }
         },
       },
