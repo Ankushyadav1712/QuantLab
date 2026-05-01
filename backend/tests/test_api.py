@@ -59,3 +59,167 @@ def test_universe_has_tickers_and_sectors(client):
     assert len(body["sectors"]) > 0
     # Sectors map covers every ticker
     assert all(t in body["sectors"] for t in body["tickers"])
+
+
+# ---------- /api/simulate response shape ----------
+
+
+def test_simulate_returns_full_is_oos_shape(client):
+    """Lock the /api/simulate response shape so the next IS/OOS / factor /
+    data_quality refactor can't silently drop a field that the frontend or a
+    consumer relies on."""
+    r = client.post(
+        "/api/simulate",
+        json={
+            "expression": "rank(close)",
+            "settings": {"start_date": "2020-01-01", "end_date": "2024-12-31"},
+            "run_oos": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    # Top-level keys
+    expected = {
+        "is_metrics", "oos_metrics", "is_timeseries", "oos_timeseries",
+        "overfitting_analysis", "factor_decomposition", "monthly_returns",
+        "expression", "settings", "data_quality", "diagnostics",
+    }
+    missing = expected - set(body.keys())
+    assert not missing, f"missing top-level keys: {missing}"
+
+    # IS/OOS metric blocks both populated when run_oos is true
+    for k in ("sharpe", "annual_return", "max_drawdown", "fitness", "win_rate"):
+        assert k in body["is_metrics"], f"is_metrics missing {k}"
+        assert k in body["oos_metrics"], f"oos_metrics missing {k}"
+
+    # Time-series have parallel structure
+    for ts_key in ("is_timeseries", "oos_timeseries"):
+        ts = body[ts_key]
+        assert ts is not None
+        for sub in ("dates", "cumulative_pnl", "daily_returns",
+                    "drawdown", "rolling_sharpe", "turnover"):
+            assert sub in ts, f"{ts_key} missing {sub}"
+
+    # IS/OOS dates partition the window — no overlap, IS ends before OOS starts
+    is_dates = body["is_timeseries"]["dates"]
+    oos_dates = body["oos_timeseries"]["dates"]
+    assert is_dates and oos_dates
+    assert is_dates[-1] < oos_dates[0]
+
+
+def test_simulate_with_run_oos_false(client):
+    """run_oos=false → oos fields are null, is_* fields cover the full window."""
+    r = client.post(
+        "/api/simulate",
+        json={"expression": "rank(close)", "run_oos": False},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["oos_metrics"] is None
+    assert body["oos_timeseries"] is None
+    assert body["overfitting_analysis"] is None
+    assert body["is_metrics"]["sharpe"] is not None
+
+
+def test_simulate_rejects_lookahead_expression(client):
+    """The linter must block negative shifts at the simulate boundary."""
+    r = client.post(
+        "/api/simulate",
+        json={"expression": "rank(delay(close, -1))"},
+    )
+    assert r.status_code == 400
+    assert "look-ahead" in r.json()["detail"] or "future" in r.json()["detail"]
+
+
+# ---------- /api/alphas full save → load → correlate → delete cycle ----------
+#
+# Both bugs that bit us today (KeyError on `metrics`, empty correlation matrix)
+# would have been caught by these tests.  Anything that breaks the
+# save → read pipeline now fails CI before it lands.
+
+
+def _save_alpha(client, name: str, expression: str) -> int:
+    r = client.post(
+        "/api/alphas",
+        json={"name": name, "expression": expression, "notes": "ci"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == name
+    assert body["expression"] == expression
+    assert isinstance(body["sharpe"], (float, int)) or body["sharpe"] is None
+    assert isinstance(body["id"], int)
+    return body["id"]
+
+
+def test_alpha_full_lifecycle(client):
+    """Save 2 alphas, list them, fetch each by id, correlate, delete."""
+    id1 = _save_alpha(client, "_ci_alpha_a", "rank(close)")
+    id2 = _save_alpha(client, "_ci_alpha_b", "rank(volume)")
+
+    try:
+        # LIST — must include both
+        r = client.get("/api/alphas")
+        assert r.status_code == 200
+        listed = {row["id"] for row in r.json()}
+        assert id1 in listed and id2 in listed
+
+        # GET by id — full record incl. parsed result_json
+        r = client.get(f"/api/alphas/{id1}")
+        assert r.status_code == 200
+        record = r.json()
+        assert record["id"] == id1
+        assert record["expression"] == "rank(close)"
+        # `result` should be the parsed simulate response with the full IS shape
+        assert record.get("result") is not None
+        assert "is_metrics" in record["result"]
+        assert "is_timeseries" in record["result"]
+
+        # CORRELATIONS — the bug we fixed today: empty matrix even with valid ids
+        r = client.post(
+            "/api/alphas/correlations",
+            json={"alpha_ids": [id1, id2]},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        # Must produce a real 2×2 matrix, not the silently-empty `{tickers:[],matrix:[]}`
+        assert len(body["tickers"]) == 2
+        assert len(body["matrix"]) == 2
+        assert len(body["matrix"][0]) == 2
+        # Diagonal == 1.0
+        assert body["matrix"][0][0] == pytest.approx(1.0)
+        assert body["matrix"][1][1] == pytest.approx(1.0)
+        # Off-diagonal symmetry
+        assert body["matrix"][0][1] == pytest.approx(body["matrix"][1][0])
+
+        # NOT FOUND — both endpoints
+        assert client.get("/api/alphas/99999999").status_code == 404
+        assert client.delete("/api/alphas/99999999").status_code == 404
+
+    finally:
+        # Always clean up both rows so re-runs aren't polluted
+        for aid in (id1, id2):
+            client.delete(f"/api/alphas/{aid}")
+
+
+def test_multi_blend_returns_simulate_shape(client):
+    """Multi-blend must produce a full IS/OOS response, same shape as /simulate."""
+    r = client.post(
+        "/api/alphas/multi-blend",
+        json={
+            "alphas": [
+                {"expression": "rank(close)", "weight": 0.6},
+                {"expression": "rank(volume)", "weight": 0.4},
+            ],
+            "settings": {"run_oos": True},
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "is_metrics" in body
+    assert "is_timeseries" in body
+    assert body["expression"] == "multi-blend"
+    # Settings echo includes the per-alpha breakdown
+    assert "alphas" in body["settings"]
+    assert len(body["settings"]["alphas"]) == 2

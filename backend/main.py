@@ -535,9 +535,20 @@ async def alphas_correlations(req: CorrelationRequest):
             payload = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        ts = payload.get("timeseries") or {}
-        dates = ts.get("dates") or []
-        rets = ts.get("daily_returns") or []
+        # New shape uses `is_timeseries` (+ optional `oos_timeseries`).  Old
+        # saved alphas (pre-IS/OOS) used a flat `timeseries` key — fall back
+        # to that so historical rows still produce correlations.
+        is_ts = payload.get("is_timeseries") or {}
+        oos_ts = payload.get("oos_timeseries") or {}
+        legacy_ts = payload.get("timeseries") or {}
+
+        dates = list(is_ts.get("dates") or legacy_ts.get("dates") or [])
+        rets = list(is_ts.get("daily_returns") or legacy_ts.get("daily_returns") or [])
+        # If the saved record has both halves, concatenate so the correlation
+        # spans the full backtest window.
+        if oos_ts.get("dates") and oos_ts.get("daily_returns"):
+            dates += list(oos_ts["dates"])
+            rets += list(oos_ts["daily_returns"])
         if not dates or not rets:
             continue
         label = (r["name"] or f"alpha_{r['id']}")
