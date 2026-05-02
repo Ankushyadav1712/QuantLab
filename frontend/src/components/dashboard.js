@@ -79,6 +79,7 @@ export function createDashboard(container) {
   container.innerHTML = `
     <div data-role="data-quality" class="data-quality-banner" style="display:none;"></div>
     <div data-role="metrics-grid" class="dashboard"></div>
+    <div data-role="deflated" class="deflated-section glass" style="display:none;"></div>
     <div data-role="is-oos" class="is-oos-section glass" style="display:none;"></div>
     <div data-role="yearly-sharpe" class="yearly-section glass" style="display:none;"></div>
     <div data-role="walk-forward" class="wf-section glass" style="display:none;"></div>
@@ -87,6 +88,7 @@ export function createDashboard(container) {
 
   const dataQualityEl = container.querySelector('[data-role="data-quality"]');
   const metricsGrid = container.querySelector('[data-role="metrics-grid"]');
+  const deflatedEl = container.querySelector('[data-role="deflated"]');
   const isOosEl = container.querySelector('[data-role="is-oos"]');
   const yearlyEl = container.querySelector('[data-role="yearly-sharpe"]');
   const wfEl = container.querySelector('[data-role="walk-forward"]');
@@ -165,6 +167,15 @@ export function createDashboard(container) {
       const cls = m.classify(v);
       if (cls) valueEl.classList.add(cls);
       animateNumber(valueEl, v, m.format);
+    }
+
+    const deflated = metrics?.deflated_sharpe;
+    if (metrics && deflated) {
+      renderDeflated(metrics, deflated);
+      deflatedEl.style.display = '';
+    } else {
+      deflatedEl.style.display = 'none';
+      deflatedEl.innerHTML = '';
     }
 
     const oos = opts.oos_metrics;
@@ -298,6 +309,75 @@ export function createDashboard(container) {
         A signal that genuinely generalizes shows mostly positive bars with similar height.
         Highly variable bars (large negatives or extremes) suggest the alpha is regime-dependent
         rather than persistent.
+      </div>
+    `;
+  }
+
+  function renderDeflated(metrics, d) {
+    // d shape: { deflated_sharpe_annualized, p_value, sharpe_threshold_annualized,
+    //            n_trials, n_obs, is_significant }
+    const headlineSharpe = metrics.sharpe ?? 0;
+    const deflatedSharpe = d.deflated_sharpe_annualized ?? 0;
+    const threshold = d.sharpe_threshold_annualized ?? 0;
+    const pValue = d.p_value ?? 0;
+    const n = d.n_trials ?? 1;
+
+    // Verdict — three buckets matching the spec.
+    let verdict = 'Likely noise';
+    let verdictClass = 'bad';
+    let verdictIcon = '❌';
+    if (pValue >= 0.95) {
+      verdict = 'Statistically real edge';
+      verdictClass = 'good';
+      verdictIcon = '✅';
+    } else if (pValue >= 0.80) {
+      verdict = 'Suggestive but not conclusive';
+      verdictClass = 'warn';
+      verdictIcon = '⚠️';
+    }
+
+    const deflatedTone =
+      deflatedSharpe > 0.3 ? 'good' : deflatedSharpe < 0 ? 'bad' : 'warn';
+
+    deflatedEl.innerHTML = `
+      <div class="deflated-header">
+        <div>
+          <div class="deflated-title">Deflated Sharpe Ratio</div>
+          <div class="deflated-subtitle">
+            Adjusted for selection bias from ${n} trial${n === 1 ? '' : 's'} this session
+          </div>
+        </div>
+        <span class="oos-badge ${verdictClass}">${verdictIcon} ${verdict}</span>
+      </div>
+
+      <div class="deflated-grid">
+        <div class="deflated-stat">
+          <div class="deflated-stat-label">Headline Sharpe</div>
+          <div class="deflated-stat-value">${fmtNum(headlineSharpe)}</div>
+        </div>
+        <div class="deflated-stat">
+          <div class="deflated-stat-label">Threshold (luck)</div>
+          <div class="deflated-stat-value">${fmtNum(threshold)}</div>
+          <div class="deflated-stat-sub">expected max from ${n} trials</div>
+        </div>
+        <div class="deflated-stat">
+          <div class="deflated-stat-label">Deflated Sharpe</div>
+          <div class="deflated-stat-value ${deflatedTone}">${fmtNum(deflatedSharpe)}</div>
+          <div class="deflated-stat-sub">headline − threshold</div>
+        </div>
+        <div class="deflated-stat">
+          <div class="deflated-stat-label">P(true SR &gt; 0)</div>
+          <div class="deflated-stat-value">${(pValue * 100).toFixed(1)}%</div>
+          <div class="deflated-stat-sub">${d.n_obs ?? 0} obs</div>
+        </div>
+      </div>
+
+      <div class="deflated-explainer">
+        With ${n} trial${n === 1 ? '' : 's'}, the best one is biased upward — the
+        threshold is the Sharpe you'd expect to see <em>by chance</em> from ${n}
+        random strategies. The deflated Sharpe subtracts that bias. P-value is
+        the probability that the true Sharpe is positive after correcting for
+        selection, return skew, and fat tails (Bailey &amp; López de Prado, 2014).
       </div>
     `;
   }

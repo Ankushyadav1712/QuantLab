@@ -33,6 +33,7 @@ from config import (
 )
 from data.factors import download_ff5_daily
 from data.fetcher import ALL_FIELDS, DataFetcher
+from data.sp100_history import membership_summary
 from db.database import connect
 from db.migrations import init_db
 from engine.backtester import Backtester, SimulationConfig
@@ -310,6 +311,8 @@ def _make_config(
         walk_forward_train_days=int(s.get("walk_forward_train_days", 252)),
         walk_forward_test_days=int(s.get("walk_forward_test_days", 63)),
         walk_forward_step_days=int(s.get("walk_forward_step_days", 63)),
+        execution_lag_days=max(1, int(s.get("execution_lag_days", 1))),
+        point_in_time_universe=bool(s.get("point_in_time_universe", False)),
     )
 
 
@@ -331,6 +334,8 @@ def _config_to_dict(cfg: SimulationConfig) -> dict[str, Any]:
         "walk_forward_train_days": cfg.walk_forward_train_days,
         "walk_forward_test_days": cfg.walk_forward_test_days,
         "walk_forward_step_days": cfg.walk_forward_step_days,
+        "execution_lag_days": cfg.execution_lag_days,
+        "point_in_time_universe": cfg.point_in_time_universe,
     }
 
 
@@ -355,12 +360,14 @@ _METRIC_KEYS = (
 )
 
 
-def _compute_perf_pack(result, perf: PerformanceAnalytics, *, spy: pd.Series | None):
+def _compute_perf_pack(
+    result, perf: PerformanceAnalytics, *, spy: pd.Series | None, n_trials: int = 1
+):
     """Run analytics on a BacktestResult and shape the (metrics, timeseries) pair."""
     bench = None
     if isinstance(spy, pd.Series) and not spy.empty:
         bench = spy.reindex(pd.to_datetime(result.dates))
-    full = perf.compute(result, benchmark_returns=bench)
+    full = perf.compute(result, benchmark_returns=bench, n_trials=n_trials)
 
     metrics = {k: full[k] for k in _METRIC_KEYS}
     # Pass period info into compare_is_oos through the metrics dict
@@ -368,6 +375,8 @@ def _compute_perf_pack(result, perf: PerformanceAnalytics, *, spy: pd.Series | N
     metrics["end_date"] = full.get("end_date")
     # Per-year breakdown surfaces regime fragility that the headline averages out
     metrics["yearly_returns"] = full.get("yearly_returns", [])
+    # Deflated Sharpe carries its own dict (sharpe + p-value + threshold)
+    metrics["deflated_sharpe"] = full.get("deflated_sharpe")
 
     timeseries = {
         "dates": list(result.dates),
@@ -381,7 +390,11 @@ def _compute_perf_pack(result, perf: PerformanceAnalytics, *, spy: pd.Series | N
 
 
 def _build_response(
-    expression: str, alpha_matrix: pd.DataFrame, cfg: SimulationConfig
+    expression: str,
+    alpha_matrix: pd.DataFrame,
+    cfg: SimulationConfig,
+    *,
+    n_trials: int = 1,
 ) -> dict[str, Any]:
     bt = Backtester(_state["data"], SECTOR_MAP)
     try:
@@ -392,8 +405,10 @@ def _build_response(
     spy = _state.get("spy_returns")
     perf = PerformanceAnalytics()
 
+    # Selection bias only applies to IS (the slice the researcher tunes against).
+    # OOS is a held-out check — n_trials=1 keeps DSR honest there.
     is_metrics, is_timeseries, is_monthly = _compute_perf_pack(
-        is_result, perf, spy=spy
+        is_result, perf, spy=spy, n_trials=n_trials
     )
 
     oos_metrics: dict[str, Any] | None = None
@@ -403,7 +418,7 @@ def _build_response(
 
     if oos_result is not None:
         oos_metrics, oos_timeseries, oos_monthly = _compute_perf_pack(
-            oos_result, perf, spy=spy
+            oos_result, perf, spy=spy, n_trials=1
         )
         overfitting = perf.compare_is_oos(is_metrics, oos_metrics)
         # Combined monthly-returns heatmap spans both halves
@@ -442,25 +457,58 @@ def _build_response(
         "monthly_returns": monthly_returns,
         "expression": expression,
         "settings": _config_to_dict(cfg),
-        # Honest disclosure: this universe is *current* S&P 100, not
-        # point-in-time membership.  Backtests inherit survivorship bias
-        # because dropouts (delistings, M&A, index removals) aren't represented.
-        "data_quality": {
-            "survivorship_bias": True,
-            "universe_kind": "current_snapshot",
-            "expected_sharpe_inflation": 0.2,
-            "notes": [
-                "Universe is the *current* S&P 100, not point-in-time index "
-                "membership. Names that were in the index in 2019 but got "
-                "delisted, acquired, or removed by 2024 are absent from the "
-                "backtest.",
-                "This survivorship bias systematically inflates Sharpe by an "
-                "estimated 0.1–0.3 vs. a survivorship-free backtest. Treat "
-                "all reported metrics as upper bounds.",
-                "Fix requires paid PIT data (CRSP / Norgate / Sharadar). "
-                "Documented in README; see Drawbacks section.",
-            ],
-        },
+        "data_quality": _data_quality(cfg, alpha_matrix),
+    }
+
+
+def _data_quality(cfg: SimulationConfig, alpha_matrix: pd.DataFrame) -> dict[str, Any]:
+    """Honest disclosure of universe biases that headline metrics inherit."""
+    notes = [
+        "Universe is the *current* S&P 100, not point-in-time index "
+        "membership. Names that were in the index in 2019 but got "
+        "delisted, acquired, or removed by 2024 are absent — survivorship "
+        "bias inflates Sharpe by an estimated 0.1–0.3.",
+        "Proper survivorship-free backtests require paid PIT data "
+        "(CRSP / Norgate / Sharadar). Documented in README → Drawbacks.",
+    ]
+    pit_block: dict[str, Any] = {"enabled": bool(cfg.point_in_time_universe)}
+    if cfg.point_in_time_universe:
+        try:
+            dates = pd.to_datetime(alpha_matrix.index)
+            tickers = list(alpha_matrix.columns)
+            summary = membership_summary(pd.DatetimeIndex(dates), tickers)
+            pit_block.update(summary)
+            if summary["tickers_affected"]:
+                affected = ", ".join(
+                    f"{a['ticker']} (joined {a['join_date']}, "
+                    f"{a['days_masked']} days masked)"
+                    for a in summary["tickers_affected"]
+                )
+                notes.append(
+                    "Point-in-time gating ON: " + affected + ". Pre-inclusion "
+                    "alpha values were masked to zero so the backtest can't "
+                    "anachronistically trade those names."
+                )
+            else:
+                notes.append(
+                    "Point-in-time gating ON, but no tickers in this window "
+                    "are affected by the curated S&P 100 inclusion-date list."
+                )
+        except (ValueError, AttributeError):
+            pass
+    else:
+        notes.append(
+            "Point-in-time gating OFF — every name in the universe is "
+            "treated as tradeable for the entire window. Toggle "
+            "'Point-in-time universe' in settings to gate late additions "
+            "(currently: TSLA pre-2020-12-21)."
+        )
+    return {
+        "survivorship_bias": True,
+        "universe_kind": "current_snapshot",
+        "expected_sharpe_inflation": 0.2,
+        "point_in_time": pit_block,
+        "notes": notes,
     }
 
 
@@ -536,7 +584,9 @@ def simulate(request: Request, req: SimulationRequest):
     # The body's `run_oos` flag wins over anything inside `settings` so
     # callers can toggle the split without rebuilding their settings dict.
     cfg = _make_config(req.settings, run_oos=req.run_oos)
-    response = _build_response(req.expression, alpha, cfg)
+    response = _build_response(
+        req.expression, alpha, cfg, n_trials=max(1, int(req.n_trials))
+    )
     # Surface any non-fatal lint warnings (long windows, zero shifts) so the
     # frontend can show them next to the dashboard.
     response["diagnostics"] = diagnostics

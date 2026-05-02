@@ -409,3 +409,55 @@ def test_compare_is_oos_severe_overfit():
     assert out["sharpe_decay"] > 0.6
     assert out["overfitting_flag"] is True
     assert out["severity"] == "severe"
+
+
+# ---------- T+1 execution lag ----------
+
+
+def test_execution_lag_default_matches_legacy_behavior(synth_data, synth_sector_map):
+    """exec_lag=1 (default) must produce the same numbers as before the option
+    existed — otherwise every saved alpha silently drifts."""
+    closes = synth_data["close"]
+    rng = np.random.default_rng(2027)
+    alpha = pd.DataFrame(
+        rng.standard_normal(closes.shape), index=closes.index, columns=closes.columns
+    )
+    bt = Backtester(synth_data, synth_sector_map)
+
+    default_cfg = _full_universe_config(synth_data)
+    explicit_cfg = _full_universe_config(synth_data, execution_lag_days=1)
+    a, _ = bt.run(alpha, default_cfg)
+    b, _ = bt.run(alpha, explicit_cfg)
+
+    np.testing.assert_allclose(a.daily_pnl, b.daily_pnl, rtol=0, atol=1e-12)
+
+
+def test_execution_lag_two_zeros_first_two_days(synth_data, synth_sector_map):
+    """exec_lag=2 means positions.shift(2) — the first two days have no
+    realized PnL (NaN positions × returns → 0 after the skipna sum)."""
+    closes = synth_data["close"]
+    rng = np.random.default_rng(2028)
+    alpha = pd.DataFrame(
+        rng.standard_normal(closes.shape), index=closes.index, columns=closes.columns
+    )
+    bt = Backtester(synth_data, synth_sector_map)
+
+    one, _ = bt.run(
+        alpha, _full_universe_config(synth_data, transaction_cost_bps=0.0)
+    )
+    two, _ = bt.run(
+        alpha,
+        _full_universe_config(
+            synth_data, transaction_cost_bps=0.0, execution_lag_days=2
+        ),
+    )
+
+    one_arr = np.asarray(one.daily_pnl, dtype=float)
+    two_arr = np.asarray(two.daily_pnl, dtype=float)
+
+    # lag=1: only day 0 has zero gross PnL.  lag=2: days 0 and 1 do.
+    assert one_arr[0] == 0.0
+    assert two_arr[0] == 0.0
+    assert two_arr[1] == 0.0
+    # And the two trajectories must actually differ — otherwise the option is a no-op
+    assert not np.allclose(one_arr, two_arr)

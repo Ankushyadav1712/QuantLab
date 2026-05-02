@@ -42,8 +42,8 @@ async function request(method, path, body, { auth = false } = {}) {
 }
 
 export const api = {
-  simulate: (expression, settings = {}) =>
-    request('POST', '/api/simulate', { expression, settings }),
+  simulate: (expression, settings = {}, n_trials = 1) =>
+    request('POST', '/api/simulate', { expression, settings, n_trials }),
   validateExpression: (expression) =>
     request('POST', '/api/validate', { expression }),
   saveAlpha: (name, expression, notes = '', settings = {}) =>
