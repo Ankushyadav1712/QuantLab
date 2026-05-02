@@ -8,7 +8,7 @@ A quantitative backtesting platform for cross-sectional alpha research on US equ
 - **Data** — daily OHLCV from yfinance, parquet-cached (24h TTL). 32 fields available in expressions: 7 base (open/high/low/close/volume/returns/vwap) + 25 derived (momentum, vol, liquidity, candle structure, etc.).
 - **Engine** — recursive-descent parser → AST evaluator → vectorised pandas backtester. 23 operators (rolling, cross-sectional, arithmetic, conditional).
 - **Backtest** — neutralization (`none`/`market`/`sector`), truncation, booksize sizing, transaction costs in bps, optional decay.
-- **Analytics** — Sharpe, CAGR, Sortino, Calmar, max drawdown, turnover, fitness, win rate, profit factor, beta vs SPY, information ratio, rolling 63-day Sharpe, monthly returns heatmap.
+- **Analytics** — Sharpe, CAGR, Sortino, Calmar, max drawdown, turnover, fitness, win rate, profit factor, beta vs SPY, information ratio, rolling 63-day Sharpe, monthly returns heatmap, **Fama-French 5-factor decomposition** (residual alpha + factor loadings with t-stats), **IS/OOS split** with overfitting verdict.
 - **Persistence** — SQLite for saved alphas + cached results; multi-blend and pairwise-correlation endpoints across saved alphas.
 
 ## Architecture
@@ -47,9 +47,9 @@ A quantitative backtesting platform for cross-sectional alpha research on US equ
 | Persistence | SQLite via aiosqlite |
 | Frontend | Vite + Vanilla JS (no framework) |
 | Charts | TradingView Lightweight Charts (CDN, v4.2.3) + Canvas + CSS grid |
-| Testing | pytest (93 tests) |
+| Testing | pytest (130 tests), GitHub Actions CI |
 | Container | Docker (multi-stage), nginx for static frontend |
-| Deploy | Render (web + static services) |
+| Deploy | Render (web + static services), Vercel (frontend) |
 
 ## Quick start (Docker)
 
@@ -88,7 +88,7 @@ npm run dev                                # http://localhost:5173
 | GET  | `/api/universe` | tickers + GICS sector map |
 | GET  | `/api/operators` | 23 operators + 32 fields with descriptions |
 | POST | `/api/validate` | `{expression}` → `{valid, error}` (pure parse check) |
-| POST | `/api/simulate` | `{expression, settings}` → metrics + timeseries + monthly_returns |
+| POST | `/api/simulate` | `{expression, settings}` → IS/OOS metrics + timeseries + monthly_returns + factor decomposition + data-quality disclosure |
 | POST | `/api/alphas` | save expression + run results to SQLite |
 | GET  | `/api/alphas` | list saved alphas (newest first) |
 | GET  | `/api/alphas/{id}` | full record incl. parsed `result_json` |
@@ -144,35 +144,41 @@ Anything that runs `pip install + uvicorn` and serves a static `dist/` directory
 
 ```
 QuantLab/
+├── .github/workflows/ci.yml         pytest on every push to main
 ├── backend/
 │   ├── main.py                      FastAPI app + endpoints
 │   ├── config.py                    UNIVERSE, SECTOR_MAP, env-aware paths
 │   ├── data/
 │   │   ├── fetcher.py               yfinance + 32-field matrix builder
+│   │   ├── factors.py               Fama-French 5 factor download + cache
 │   │   └── universe.py
 │   ├── engine/
 │   │   ├── parser.py                tokenizer + recursive-descent parser
 │   │   ├── operators.py             23 ops (ts/cs/arithmetic/conditional)
 │   │   ├── evaluator.py             AST walker
-│   │   └── backtester.py            run() pipeline
-│   ├── analytics/performance.py     Sharpe, CAGR, Sortino, …
+│   │   ├── lint.py                  look-ahead-bias linter
+│   │   └── backtester.py            run() pipeline + IS/OOS split
+│   ├── analytics/
+│   │   ├── performance.py           Sharpe, CAGR, Sortino, IS/OOS comparison
+│   │   └── factor_decomp.py         FF5 OLS regression + factor loadings
 │   ├── models/schemas.py            Pydantic request/response shapes
 │   ├── db/                          aiosqlite, migrations
 │   ├── scripts/
 │   │   ├── download_data.py         pre-populate parquet cache
 │   │   └── verify_alphas.py         CLI run of canonical expressions
-│   ├── tests/                       pytest (93 tests)
+│   ├── tests/                       pytest (130 tests)
 │   ├── Dockerfile + .dockerignore
 │   └── requirements.txt
 ├── frontend/
 │   ├── index.html
 │   ├── src/
-│   │   ├── main.js                  layout, modal helper, wiring
+│   │   ├── main.js                  layout, welcome modal, wiring
 │   │   ├── api.js                   fetch wrappers
+│   │   ├── ui/toast.js              toast + confirmDialog (replaces alert/confirm)
 │   │   ├── styles/index.css         design system
 │   │   └── components/
-│   │       ├── editor.js            highlight + validate + settings
-│   │       ├── dashboard.js         6 metric cards, animated counters
+│   │       ├── editor.js            highlight + validate + settings panel
+│   │       ├── dashboard.js         metrics + IS/OOS panel + factor decomp
 │   │       ├── charts.js            equity, drawdown, sharpe, hist, heatmap
 │   │       ├── sidebar.js           saved alphas, blend, correlations
 │   │       └── correlation.js       pairwise heatmap
@@ -190,7 +196,9 @@ QuantLab/
 backend/.venv/bin/pytest backend/tests/ -v
 ```
 
-100+ tests covering parser (operators + invalid syntax + precedence), operators (synthetic 100×10 fixture against pandas), backtester (constant-alpha invariants, turnover ≥ 0, cost-vs-zero-cost, IS/OOS partitioning), the look-ahead-bias linter, and the API (TestClient-based).
+130 tests covering parser (operators + invalid syntax + precedence), operators (synthetic 100×10 fixture against pandas), backtester (constant-alpha invariants, turnover ≥ 0, cost-vs-zero-cost, IS/OOS partitioning), the look-ahead-bias linter, the Fama-French 5-factor decomposition (synthetic-truth recovery), and the API (TestClient-based, including the full save → load → correlate cycle).
+
+CI runs the same suite on every push to `main` via `.github/workflows/ci.yml`.
 
 ## Known limitations / drawbacks
 
@@ -206,6 +214,8 @@ These are honest gaps, not promises.  The platform's metrics should be read in l
 
 ## Mitigations already shipped
 
-- ✅ **IS/OOS split** on every backtest with overfitting-decay verdict.
+- ✅ **IS/OOS split** on every backtest with overfitting-decay verdict ("Robust" / "Moderate decay" / "High decay" / "Severe overfit" / "Negative OOS").
 - ✅ **Look-ahead-bias linter** — `delay(x, -1)` and `delta(x, -5)` are caught at parse time and rejected by `/api/simulate` with a 400.
+- ✅ **Fama-French 5-factor decomposition** on every backtest. Surfaces residual alpha (intercept), per-factor loadings (`market`, `size`, `value`, `profitability`, `investment`) with t-stats, R², and the share of variance explained by factor exposure. Tells you how much of your headline Sharpe is just market beta.
 - ✅ **Data-quality banner** on the dashboard so the survivorship-bias caveat is visible alongside every reported Sharpe.
+- ✅ **GitHub Actions CI** running pytest on every push, including an integration test of the full save → load → correlate cycle to prevent shape-rename regressions.
