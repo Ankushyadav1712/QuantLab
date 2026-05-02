@@ -7,5 +7,6 @@ pyarrow
 pydantic
 aiosqlite
 httpx
+slowapi
 pytest
 pytest-asyncio

@@ -15,6 +15,13 @@ const root = document.getElementById('app');
 root.innerHTML = `
   <div class="app">
     <header class="header">
+      <button type="button" id="sidebar-toggle" class="icon-btn sidebar-toggle" aria-label="Toggle sidebar">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
       <h1><span class="logo-dot"></span> QuantLab</h1>
       <div class="header-actions">
         <button type="button" id="help-btn" class="icon-btn" title="Show welcome guide" aria-label="Show welcome guide">
@@ -27,6 +34,7 @@ root.innerHTML = `
         <button type="button" id="op-docs-btn">Operator Docs</button>
       </div>
     </header>
+    <div id="sidebar-scrim" class="sidebar-scrim" aria-hidden="true"></div>
     <aside id="sidebar"></aside>
     <main class="main">
       <section id="editor"></section>
@@ -116,6 +124,29 @@ sidebar.setOnCorrelate(async (ids) => {
 });
 
 sidebar.refresh();
+
+// ---------- Mobile sidebar drawer ----------
+// Below ~720px the sidebar is off-canvas; this hamburger + scrim toggle it.
+const sidebarEl = document.getElementById('sidebar');
+const sidebarToggleBtn = document.getElementById('sidebar-toggle');
+const sidebarScrim = document.getElementById('sidebar-scrim');
+
+function openSidebar() {
+  sidebarEl.classList.add('open');
+  sidebarScrim.classList.add('open');
+  sidebarToggleBtn.setAttribute('aria-expanded', 'true');
+}
+function closeSidebar() {
+  sidebarEl.classList.remove('open');
+  sidebarScrim.classList.remove('open');
+  sidebarToggleBtn.setAttribute('aria-expanded', 'false');
+}
+sidebarToggleBtn.addEventListener('click', () => {
+  if (sidebarEl.classList.contains('open')) closeSidebar();
+  else openSidebar();
+});
+sidebarScrim.addEventListener('click', closeSidebar);
+sidebarToggleBtn.setAttribute('aria-expanded', 'false');
 
 // ---------- First-visit welcome ----------
 
