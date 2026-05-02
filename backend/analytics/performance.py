@@ -138,6 +138,24 @@ class PerformanceAnalytics:
             for (year, month), value in monthly.items()
         ]
 
+        # Per-year Sharpe + return — exposes regime fragility that the
+        # single full-period Sharpe averages out.
+        yearly_returns = []
+        for year, group in daily_returns.groupby(daily_returns.index.year):
+            mean_y = float(group.mean()) if len(group) else 0.0
+            std_y = float(group.std(ddof=1)) if len(group) > 1 else 0.0
+            year_sharpe = (
+                mean_y / std_y * math.sqrt(TRADING_DAYS_PER_YEAR)
+                if std_y > 0
+                else 0.0
+            )
+            yearly_returns.append({
+                "year": int(year),
+                "sharpe": _safe_float(year_sharpe),
+                "annual_return": _safe_float(group.sum()),
+                "n_days": int(len(group)),
+            })
+
         return {
             "sharpe": _safe_float(sharpe),
             "annual_return": _safe_float(annual_return),
@@ -157,6 +175,7 @@ class PerformanceAnalytics:
             ),
             "rolling_sharpe": _safe_list(rolling_sharpe.tolist()),
             "monthly_returns": monthly_returns,
+            "yearly_returns": yearly_returns,
             "drawdown_series": _safe_list(drawdown.tolist()),
             # Date range carried forward so compare_is_oos can build period
             # labels without needing the original BacktestResult.

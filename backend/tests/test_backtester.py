@@ -302,6 +302,102 @@ def test_compare_is_oos_robust_label():
     assert out["oos_period"] == {"start": "2023-01-01", "end": "2024-12-31"}
 
 
+# ---------- Square-root market-impact cost model ----------
+
+
+def test_sqrt_impact_charges_more_than_flat(synth_data, synth_sector_map):
+    """Adding the square-root impact term must charge >= the flat-bps cost
+    everywhere, since participation ≥ 0 and σ ≥ 0."""
+    closes = synth_data["close"]
+    rng = np.random.default_rng(2027)
+    alpha = pd.DataFrame(
+        rng.standard_normal(closes.shape), index=closes.index, columns=closes.columns
+    )
+    # Provide the fields the impact model needs
+    volume = pd.DataFrame(
+        1_000_000 + rng.uniform(0, 500_000, closes.shape),
+        index=closes.index, columns=closes.columns,
+    )
+    data = {
+        "close": closes,
+        "returns": synth_data["returns"],
+        "dollar_volume": closes * volume,
+        "realized_vol": synth_data["returns"].rolling(20).std(),
+    }
+    bt = Backtester(data, synth_sector_map)
+
+    flat = bt._run_pipeline(
+        alpha,
+        SimulationConfig(
+            universe=list(closes.columns),
+            start_date=str(closes.index[0].date()),
+            end_date=str(closes.index[-1].date()),
+            cost_model="flat",
+            transaction_cost_bps=5.0,
+        ),
+    )
+    impact = bt._run_pipeline(
+        alpha,
+        SimulationConfig(
+            universe=list(closes.columns),
+            start_date=str(closes.index[0].date()),
+            end_date=str(closes.index[-1].date()),
+            cost_model="sqrt_impact",
+            transaction_cost_bps=5.0,
+            impact_coefficient=0.1,
+        ),
+    )
+    # Impact model: equal turnover (positions don't change), but cost per day
+    # is ≥ flat-cost — so cumulative PnL is ≤ flat run.
+    assert impact.cumulative_pnl[-1] <= flat.cumulative_pnl[-1]
+    assert sum(impact.turnover) == pytest.approx(sum(flat.turnover), rel=1e-9)
+
+
+# ---------- Walk-forward analysis ----------
+
+
+def test_walk_forward_produces_one_window_per_step(synth_data, synth_sector_map):
+    closes = synth_data["close"]  # 100 trading days
+    rng = np.random.default_rng(31)
+    alpha = pd.DataFrame(
+        rng.standard_normal(closes.shape), index=closes.index, columns=closes.columns
+    )
+    bt = Backtester(synth_data, synth_sector_map)
+    # 100 days, train=40, test=20, step=20 → windows at cursor=0, 20, 40
+    # cursor + train + test = 0+60=60 ≤ 100 ✓; 20+60=80 ≤ 100 ✓; 40+60=100 ≤ 100 ✓; 60+60=120 ✗
+    # → 3 windows
+    cfg = _full_universe_config(
+        synth_data,
+        run_walk_forward=True,
+        walk_forward_train_days=40,
+        walk_forward_test_days=20,
+        walk_forward_step_days=20,
+    )
+    windows = bt.walk_forward(alpha, cfg)
+    assert len(windows) == 3
+    for w in windows:
+        assert w["train_start"] < w["train_end"] < w["test_start"] < w["test_end"]
+        assert isinstance(w["train_sharpe"], float)
+        assert isinstance(w["test_sharpe"], float)
+
+
+def test_walk_forward_returns_empty_when_history_too_short(synth_data, synth_sector_map):
+    closes = synth_data["close"]
+    alpha = pd.DataFrame(
+        np.zeros(closes.shape), index=closes.index, columns=closes.columns
+    )
+    bt = Backtester(synth_data, synth_sector_map)
+    cfg = _full_universe_config(
+        synth_data,
+        run_walk_forward=True,
+        # Train+test exceeds the 100-day history — must return [] not crash
+        walk_forward_train_days=200,
+        walk_forward_test_days=50,
+        walk_forward_step_days=20,
+    )
+    assert bt.walk_forward(alpha, cfg) == []
+
+
 def test_compare_is_oos_severe_overfit():
     from analytics.performance import PerformanceAnalytics
 

@@ -66,15 +66,31 @@ class FactorDecomposition:
         ss_tot = float(((y - y.mean()) ** 2).sum())
         r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-        # Standard errors → t-statistics
+        # Standard errors → t-statistics.
+        # Daily strategy returns are autocorrelated; OLS standard errors assume
+        # i.i.d. residuals and would over-state significance.  Use Newey-West
+        # (HAC) with a Bartlett kernel — the standard fix in the asset-pricing
+        # literature.  Lag length follows Newey & West (1987): floor(4*(n/100)^(2/9)).
         try:
-            sigma2 = ss_res / (n - k) if n > k else float("inf")
             xtx_inv = np.linalg.inv(X_aug.T @ X_aug)
-            se = np.sqrt(np.diag(xtx_inv) * sigma2)
+            lag = max(1, int(np.floor(4.0 * (n / 100.0) ** (2.0 / 9.0))))
+            # Newey-West sandwich: (X'X)^-1 · S · (X'X)^-1, where S is the
+            # autocorrelation-corrected meat matrix.
+            S = (X_aug * resid[:, None]).T @ (X_aug * resid[:, None])  # lag-0 term
+            for ell in range(1, lag + 1):
+                weight = 1.0 - ell / (lag + 1.0)
+                gamma = (X_aug[ell:] * resid[ell:, None]).T @ (
+                    X_aug[:-ell] * resid[:-ell, None]
+                )
+                S = S + weight * (gamma + gamma.T)
+            cov_hac = xtx_inv @ S @ xtx_inv
+            se = np.sqrt(np.diag(cov_hac))
             t_stats = beta / np.where(se > 0, se, np.nan)
+            se_method = f"newey-west (lag={lag})"
         except np.linalg.LinAlgError:
             se = np.full(k, np.nan)
             t_stats = np.full(k, np.nan)
+            se_method = "failed"
 
         alpha_daily = float(beta[0])
         alpha_annualized = alpha_daily * TRADING_DAYS_PER_YEAR
@@ -104,6 +120,7 @@ class FactorDecomposition:
             "factor_share": _safe_float(factor_share),
             "loadings": loadings,
             "sample_size": int(n),
+            "se_method": se_method,
             "period": {
                 "start": s.index[0].strftime("%Y-%m-%d"),
                 "end": s.index[-1].strftime("%Y-%m-%d"),

@@ -1,12 +1,30 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
 import pandas as pd
 
 from engine import operators as ops
+
+
+def _quick_sharpe(daily_returns: list[float]) -> float:
+    """Annualized Sharpe from a list of daily fractional returns.
+
+    Used by walk_forward where we only need the headline number for each
+    window — not the full PerformanceAnalytics output.
+    """
+    arr = np.asarray(
+        [x for x in daily_returns if x is not None and not (isinstance(x, float) and np.isnan(x))],
+        dtype=float,
+    )
+    if arr.size < 2:
+        return 0.0
+    std = float(arr.std(ddof=1))
+    if std <= 0:
+        return 0.0
+    return float(arr.mean() / std * np.sqrt(252))
 
 
 @dataclass
@@ -24,6 +42,22 @@ class SimulationConfig:
     # (returned in the tuple's first slot, OOS slot is None).
     oos_split: float = 0.3
     run_oos: bool = True
+
+    # Cost model.  `flat` keeps the original `bps × turnover` formula.
+    # `sqrt_impact` adds an Almgren-Chriss-style permanent-impact term:
+    #     impact_$_i = impact_coefficient · σ_i · |trade_$_i| · √(participation_i)
+    # where `participation_i = |trade_$_i| / dollar_volume_i` and σ_i is each
+    # stock's realized volatility.  This is the realistic upgrade — flat-bps
+    # under-charges high-turnover, large-trade-relative-to-ADV strategies.
+    cost_model: Literal["flat", "sqrt_impact"] = "flat"
+    impact_coefficient: float = 0.1
+
+    # Walk-forward analysis (rolling train→test windows over the full window).
+    # Off by default since it costs ~20× the compute of a single backtest.
+    run_walk_forward: bool = False
+    walk_forward_train_days: int = 252
+    walk_forward_test_days: int = 63
+    walk_forward_step_days: int = 63
 
 
 @dataclass
@@ -134,9 +168,38 @@ class Backtester:
         stock_pnl = positions.shift(1) * returns
         gross_pnl = stock_pnl.sum(axis=1, skipna=True)
 
-        # Transaction costs
-        turnover = (positions - positions.shift(1)).abs().sum(axis=1, skipna=True)
-        cost = turnover * config.transaction_cost_bps / 10_000.0
+        # Transaction costs.  Per-stock |Δ$| matrix → flat spread/commission
+        # always, optional Almgren-Chriss square-root impact on top.
+        delta_pos = (positions - positions.shift(1)).abs()
+        flat_cost_per_stock = delta_pos * config.transaction_cost_bps / 10_000.0
+
+        if config.cost_model == "sqrt_impact":
+            dv = self.data.get("dollar_volume")
+            rv = self.data.get("realized_vol")
+            if dv is not None and rv is not None and not dv.empty and not rv.empty:
+                dv_aligned = dv.reindex(
+                    index=positions.index, columns=positions.columns
+                ).replace(0, np.nan)
+                rv_aligned = rv.reindex(
+                    index=positions.index, columns=positions.columns
+                ).fillna(0.0)
+                participation = (delta_pos / dv_aligned).fillna(0.0).clip(lower=0.0)
+                # impact_$ = c · σ · |trade$| · √(participation)
+                impact_per_stock = (
+                    config.impact_coefficient
+                    * rv_aligned
+                    * delta_pos
+                    * participation.pow(0.5)
+                )
+                cost_per_stock = flat_cost_per_stock + impact_per_stock
+            else:
+                # Required fields missing — fall back silently to flat-bps
+                cost_per_stock = flat_cost_per_stock
+        else:
+            cost_per_stock = flat_cost_per_stock
+
+        turnover = delta_pos.sum(axis=1, skipna=True)
+        cost = cost_per_stock.sum(axis=1, skipna=True)
         net_pnl = gross_pnl - cost
 
         cumulative = net_pnl.cumsum()
@@ -153,6 +216,78 @@ class Backtester:
             turnover=turnover.tolist(),
             positions=positions,
         )
+
+    # ------------------------------------------------------------------
+    # Walk-forward analysis: rolling train→test windows over the alpha.
+    # The senior-quant test for "does this generalize?" — a single 70/30
+    # split can pass or fail by luck of which regime lands in OOS.  Sliding
+    # the split forward in time removes that luck.
+    # ------------------------------------------------------------------
+
+    def walk_forward(
+        self, alpha_matrix: pd.DataFrame, config: SimulationConfig
+    ) -> list[dict]:
+        """Slide a (train_days → test_days) window across the full history.
+
+        Returns one dict per window: {train/test period, train Sharpe, test
+        Sharpe, test annual_return, test cumulative PnL}.  Empty list if the
+        history is too short for even one window.
+        """
+        # Apply the same universe + date + nan-row filter we use in run()
+        cols = [t for t in config.universe if t in alpha_matrix.columns]
+        if not cols:
+            return []
+        alpha = alpha_matrix[cols].copy()
+        alpha.index = pd.to_datetime(alpha.index)
+        start = pd.to_datetime(config.start_date)
+        end = pd.to_datetime(config.end_date)
+        alpha = alpha.loc[(alpha.index >= start) & (alpha.index <= end)]
+        if alpha.empty:
+            return []
+        nan_frac = alpha.isna().sum(axis=1) / len(alpha.columns)
+        alpha = alpha.loc[nan_frac <= 0.5]
+        if alpha.empty:
+            return []
+
+        train_n = max(1, int(config.walk_forward_train_days))
+        test_n = max(1, int(config.walk_forward_test_days))
+        step = max(1, int(config.walk_forward_step_days))
+
+        results: list[dict] = []
+        cursor = 0
+        n = len(alpha)
+        while cursor + train_n + test_n <= n:
+            train_slice = alpha.iloc[cursor : cursor + train_n]
+            test_slice = alpha.iloc[cursor + train_n : cursor + train_n + test_n]
+
+            try:
+                train_res = self._run_pipeline(train_slice, config)
+                test_res = self._run_pipeline(test_slice, config)
+            except ValueError:
+                # Degenerate window (e.g. all-zero alpha after neutralization)
+                cursor += step
+                continue
+
+            train_sharpe = _quick_sharpe(train_res.daily_returns)
+            test_sharpe = _quick_sharpe(test_res.daily_returns)
+
+            results.append({
+                "train_start": train_slice.index[0].strftime("%Y-%m-%d"),
+                "train_end": train_slice.index[-1].strftime("%Y-%m-%d"),
+                "test_start": test_slice.index[0].strftime("%Y-%m-%d"),
+                "test_end": test_slice.index[-1].strftime("%Y-%m-%d"),
+                "train_sharpe": train_sharpe,
+                "test_sharpe": test_sharpe,
+                "test_total_return": float(
+                    sum(x for x in test_res.daily_returns if x is not None)
+                ),
+                "test_cumulative_pnl": float(
+                    test_res.cumulative_pnl[-1] if test_res.cumulative_pnl else 0.0
+                ),
+            })
+            cursor += step
+
+        return results
 
     def _neutralize(self, alpha: pd.DataFrame, mode: str) -> pd.DataFrame:
         if mode == "none":
