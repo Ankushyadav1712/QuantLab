@@ -80,12 +80,16 @@ export function createDashboard(container) {
     <div data-role="data-quality" class="data-quality-banner" style="display:none;"></div>
     <div data-role="metrics-grid" class="dashboard"></div>
     <div data-role="is-oos" class="is-oos-section glass" style="display:none;"></div>
+    <div data-role="yearly-sharpe" class="yearly-section glass" style="display:none;"></div>
+    <div data-role="walk-forward" class="wf-section glass" style="display:none;"></div>
     <div data-role="factor-decomp" class="factor-section glass" style="display:none;"></div>
   `;
 
   const dataQualityEl = container.querySelector('[data-role="data-quality"]');
   const metricsGrid = container.querySelector('[data-role="metrics-grid"]');
   const isOosEl = container.querySelector('[data-role="is-oos"]');
+  const yearlyEl = container.querySelector('[data-role="yearly-sharpe"]');
+  const wfEl = container.querySelector('[data-role="walk-forward"]');
   const factorEl = container.querySelector('[data-role="factor-decomp"]');
 
   // Build the 6 metric cards
@@ -190,6 +194,112 @@ export function createDashboard(container) {
       factorEl.style.display = 'none';
       factorEl.innerHTML = '';
     }
+
+    const yearly = metrics?.yearly_returns || [];
+    if (yearly.length) {
+      renderYearlyShape(yearly);
+      yearlyEl.style.display = '';
+    } else {
+      yearlyEl.style.display = 'none';
+      yearlyEl.innerHTML = '';
+    }
+
+    const wf = opts.walk_forward;
+    if (wf && wf.length) {
+      renderWalkForward(wf);
+      wfEl.style.display = '';
+    } else {
+      wfEl.style.display = 'none';
+      wfEl.innerHTML = '';
+    }
+  }
+
+  function renderYearlyShape(yearly) {
+    // Bidirectional bar chart: bars grow up for positive Sharpe, down for negative.
+    const maxAbs = Math.max(0.5, ...yearly.map((y) => Math.abs(y.sharpe ?? 0)));
+    const bars = yearly
+      .map((y) => {
+        const sh = y.sharpe ?? 0;
+        const isPos = sh >= 0;
+        const heightPct = (Math.abs(sh) / maxAbs) * 50; // ±50% of column
+        const tone = isPos ? 'pos' : 'neg';
+        const tooltip = `${y.year}: Sharpe ${sh.toFixed(2)} · Σret ${(y.annual_return * 100).toFixed(1)}% · ${y.n_days}d`;
+        return `
+          <div class="yearly-col" title="${tooltip}">
+            <div class="yearly-bar-stack">
+              ${isPos
+                ? `<div class="yearly-bar ${tone}" style="height:${heightPct}%;"></div><div class="yearly-bar-spacer"></div>`
+                : `<div class="yearly-bar-spacer"></div><div class="yearly-bar ${tone}" style="height:${heightPct}%;"></div>`}
+            </div>
+            <div class="yearly-axis"></div>
+            <div class="yearly-label">${y.year}</div>
+            <div class="yearly-value ${tone}">${sh.toFixed(2)}</div>
+          </div>
+        `;
+      })
+      .join('');
+    yearlyEl.innerHTML = `
+      <div class="yearly-header">
+        <div class="yearly-title">Sharpe by year</div>
+        <div class="yearly-subtitle">Regime-fragility check — a strong overall Sharpe can hide a losing year</div>
+      </div>
+      <div class="yearly-grid">${bars}</div>
+    `;
+  }
+
+  function renderWalkForward(windows) {
+    const ts = windows.map((w) => w.test_sharpe ?? 0);
+    const maxAbs = Math.max(0.5, ...ts.map((v) => Math.abs(v)));
+    const positiveCount = ts.filter((v) => v > 0).length;
+    const negativeCount = ts.filter((v) => v < 0).length;
+    const meanTest = ts.reduce((a, b) => a + b, 0) / ts.length;
+    const minTest = Math.min(...ts);
+    const maxTest = Math.max(...ts);
+
+    const bars = windows
+      .map((w) => {
+        const sh = w.test_sharpe ?? 0;
+        const isPos = sh >= 0;
+        const heightPct = (Math.abs(sh) / maxAbs) * 48;
+        const tone = isPos ? 'pos' : 'neg';
+        const tooltip = `${w.test_start} → ${w.test_end}\nTrain Sharpe: ${(w.train_sharpe ?? 0).toFixed(2)}\nTest Sharpe:  ${sh.toFixed(2)}`;
+        return `
+          <div class="wf-col" title="${tooltip}">
+            <div class="wf-bar-stack">
+              ${isPos
+                ? `<div class="wf-bar ${tone}" style="height:${heightPct}%;"></div><div class="wf-bar-spacer"></div>`
+                : `<div class="wf-bar-spacer"></div><div class="wf-bar ${tone}" style="height:${heightPct}%;"></div>`}
+            </div>
+            <div class="wf-axis"></div>
+          </div>
+        `;
+      })
+      .join('');
+
+    const startLabel = windows[0]?.test_start || '';
+    const endLabel = windows[windows.length - 1]?.test_end || '';
+
+    wfEl.innerHTML = `
+      <div class="wf-header">
+        <div>
+          <div class="wf-title">Walk-forward — out-of-sample Sharpe per rolling window</div>
+          <div class="wf-subtitle">${windows.length} windows · ${startLabel} → ${endLabel}</div>
+        </div>
+        <div class="wf-stats">
+          <span><span class="wf-stat-label">Mean OOS</span> <strong>${meanTest.toFixed(2)}</strong></span>
+          <span><span class="wf-stat-label">Min</span> <strong class="${minTest < 0 ? 'neg' : 'pos'}">${minTest.toFixed(2)}</strong></span>
+          <span><span class="wf-stat-label">Max</span> <strong class="pos">${maxTest.toFixed(2)}</strong></span>
+          <span><span class="wf-stat-label">Positive</span> <strong>${positiveCount}/${windows.length}</strong></span>
+        </div>
+      </div>
+      <div class="wf-grid">${bars}</div>
+      <div class="wf-explainer">
+        Each bar is the OOS Sharpe from training on a 252-day window then testing on the next 63 days.
+        A signal that genuinely generalizes shows mostly positive bars with similar height.
+        Highly variable bars (large negatives or extremes) suggest the alpha is regime-dependent
+        rather than persistent.
+      </div>
+    `;
   }
 
   function renderFactorDecomp(d) {

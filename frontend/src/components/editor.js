@@ -141,6 +141,15 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
         </div>
       </div>
 
+      <!-- Cost model -->
+      <div class="settings-block" data-block="cost-model">
+        <div class="settings-block-label">Cost model</div>
+        <div class="settings-segmented" data-setting="cost_model" data-value="flat">
+          <button type="button" data-value="flat" class="active">Flat (bps × turnover)</button>
+          <button type="button" data-value="sqrt_impact">√-impact (Almgren–Chriss)</button>
+        </div>
+      </div>
+
       <!-- Validation block -->
       <div class="settings-block" data-block="validation">
         <label class="settings-toggle-row">
@@ -151,6 +160,10 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
           <div class="settings-oos-bar-is"></div>
           <div class="settings-oos-bar-oos"></div>
         </div>
+        <label class="settings-toggle-row" style="margin-top:6px;">
+          <input type="checkbox" data-setting="run_walk_forward" />
+          <span>Run walk-forward (rolling 252/63 windows · slower)</span>
+        </label>
       </div>
 
       <div class="settings-footer">
@@ -177,7 +190,9 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
   const booksizeSlider = container.querySelector('[data-setting="booksize_millions"]');
   const truncationSlider = container.querySelector('[data-setting="truncation_pct"]');
   const costSlider = container.querySelector('[data-setting="transaction_cost_bps"]');
+  const costModelSegmented = container.querySelector('[data-setting="cost_model"]');
   const oosCheckbox = container.querySelector('[data-setting="run_oos"]');
+  const wfCheckbox = container.querySelector('[data-setting="run_walk_forward"]');
   const oosBar = container.querySelector('[data-role="oos-bar"]');
 
   const decayValueEl = container.querySelector('[data-role="decay-value"]');
@@ -194,6 +209,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     truncation_pct: 5,
     transaction_cost_bps: 5,
     run_oos: true,
+    cost_model: 'flat',
+    run_walk_forward: false,
   };
 
   textarea.value = initialExpression;
@@ -257,6 +274,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     if (Number(truncationSlider.value) !== DEFAULTS.truncation_pct) n++;
     if (Number(costSlider.value) !== DEFAULTS.transaction_cost_bps) n++;
     if (oosCheckbox.checked !== DEFAULTS.run_oos) n++;
+    if (costModelSegmented.dataset.value !== DEFAULTS.cost_model) n++;
+    if (wfCheckbox.checked !== DEFAULTS.run_walk_forward) n++;
     return n;
   }
   function updateModifiedPill() {
@@ -331,16 +350,20 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
   syncCostLabel();
   syncOosBar();
 
-  // ---------- Segmented control (neutralization) ----------
+  // ---------- Segmented controls (neutralization, cost model) ----------
 
-  neutSegmented.addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-value]');
-    if (!btn) return;
-    neutSegmented.querySelectorAll('button').forEach((b) =>
-      b.classList.toggle('active', b === btn)
-    );
-    neutSegmented.dataset.value = btn.dataset.value;
-  });
+  function wireSegmented(el) {
+    el.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-value]');
+      if (!btn) return;
+      el.querySelectorAll('button').forEach((b) =>
+        b.classList.toggle('active', b === btn)
+      );
+      el.dataset.value = btn.dataset.value;
+    });
+  }
+  wireSegmented(neutSegmented);
+  wireSegmented(costModelSegmented);
 
   // ---------- Date presets ----------
 
@@ -375,12 +398,17 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     truncationSlider.value = DEFAULTS.truncation_pct;
     costSlider.value = DEFAULTS.transaction_cost_bps;
     oosCheckbox.checked = DEFAULTS.run_oos;
+    wfCheckbox.checked = DEFAULTS.run_walk_forward;
 
-    // Segmented: re-mark "market"
+    // Segmented: reset to defaults
     neutSegmented.querySelectorAll('button').forEach((b) =>
       b.classList.toggle('active', b.dataset.value === DEFAULTS.neutralization)
     );
     neutSegmented.dataset.value = DEFAULTS.neutralization;
+    costModelSegmented.querySelectorAll('button').forEach((b) =>
+      b.classList.toggle('active', b.dataset.value === DEFAULTS.cost_model)
+    );
+    costModelSegmented.dataset.value = DEFAULTS.cost_model;
 
     // Clear preset highlights
     datePresets.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
@@ -501,6 +529,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
       truncation: Number(truncationSlider.value) / 100,
       transaction_cost_bps: Number(costSlider.value),
       run_oos: oosCheckbox.checked,
+      cost_model: costModelSegmented.dataset.value,
+      run_walk_forward: wfCheckbox.checked,
     };
   }
   function setSaveEnabled(enabled) {
