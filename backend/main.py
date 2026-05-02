@@ -6,10 +6,19 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
+import hmac
+import logging
+import os
+
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from analytics.factor_decomp import FactorDecomposition
 from analytics.performance import PerformanceAnalytics, _safe_float, _safe_list
@@ -143,10 +152,40 @@ async def lifespan(_app: FastAPI):
     _state["spy_returns"] = spy_returns
     _state["ff5"] = ff5
     _state["data"] = {field: fetcher.get_data_matrix(field) for field in DATA_FIELDS}
+    log.info(
+        "lifespan: ready",
+        extra={
+            "environment": ENVIRONMENT,
+            "n_fields": len(_state["data"]),
+            "n_tickers": len(fetcher._frames) if hasattr(fetcher, "_frames") else 0,
+            "ff5_present": bool(ff5 is not None and not ff5.empty),
+            "auth_enabled": bool(API_TOKEN),
+        },
+    )
     yield
+    log.info("lifespan: shutdown")
 
 
 app = FastAPI(title="QuantLab", lifespan=lifespan)
+
+# ---------- Rate limiting ----------
+# Per-IP limits via slowapi.  Generous in development, tighter in production
+# so a single client can't DoS our single-worker free-tier deploy.  Custom 429
+# handler keeps the JSON shape consistent with our other errors.
+_LIMIT_DEFAULT = "120/minute" if ENVIRONMENT != "production" else "30/minute"
+_LIMIT_SIMULATE = "60/minute" if ENVIRONMENT != "production" else "10/minute"
+_LIMIT_VALIDATE = "300/minute"  # cheap, debounced from the editor — keep loose
+limiter = Limiter(key_func=get_remote_address, default_limits=[_LIMIT_DEFAULT])
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(_request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+    )
 
 # Dev keeps "*" so a browser can hit the API from any localhost variant or
 # from a LAN box; production tightens to the configured allow-list.
@@ -158,6 +197,93 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------- Logging ----------
+# Plain text in dev (readable in the uvicorn console), JSON-ish in production
+# (one event per line so log aggregators can parse it).  No external deps —
+# just stdlib logging configured once at import time.
+
+_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+class _JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        # Pull through any structured extras attached via logger.info(..., extra={...})
+        for key, value in record.__dict__.items():
+            if key in payload or key.startswith("_"):
+                continue
+            if key in (
+                "args", "asctime", "created", "exc_info", "exc_text",
+                "filename", "funcName", "levelname", "levelno", "lineno",
+                "module", "msecs", "message", "msg", "name", "pathname",
+                "process", "processName", "relativeCreated", "stack_info",
+                "thread", "threadName", "taskName",
+            ):
+                continue
+            try:
+                json.dumps(value)
+                payload[key] = value
+            except (TypeError, ValueError):
+                payload[key] = repr(value)
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+
+def _configure_logging() -> None:
+    handler = logging.StreamHandler()
+    if ENVIRONMENT == "production":
+        handler.setFormatter(_JsonFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+    root = logging.getLogger()
+    # Replace any handlers uvicorn might have already attached
+    root.handlers = [handler]
+    root.setLevel(_LOG_LEVEL)
+    # Make uvicorn / fastapi loggers respect our config too
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
+        logging.getLogger(name).handlers = [handler]
+        logging.getLogger(name).propagate = False
+
+
+_configure_logging()
+log = logging.getLogger("quantlab")
+
+
+# ---------- Auth ----------
+# Optional bearer-token gate on alpha-mutating endpoints (POST/DELETE on
+# /api/alphas).  Set the env var QUANTLAB_API_TOKEN to enable.  When unset,
+# auth is bypassed — keeps local dev frictionless.  In production with a
+# public URL this prevents drive-by deletion of saved alphas.
+
+API_TOKEN = os.getenv("QUANTLAB_API_TOKEN", "").strip()
+
+
+def require_api_token(authorization: str | None = Header(default=None)) -> None:
+    if not API_TOKEN:
+        return  # Auth disabled in this deployment
+    expected = f"Bearer {API_TOKEN}"
+    # `hmac.compare_digest` runs in constant time regardless of where the
+    # strings differ, so an attacker can't time-distinguish "first byte wrong"
+    # from "almost-right token".  Plain `!=` would be vulnerable in theory.
+    provided = authorization or ""
+    if not hmac.compare_digest(provided.encode(), expected.encode()):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Missing or invalid Authorization header. "
+                "Send: Authorization: Bearer <token>"
+            ),
+        )
 
 
 # ---------- Helpers ----------
@@ -363,7 +489,11 @@ def get_operators():
 
 
 @app.post("/api/validate")
-def validate(req: ValidateRequest):
+@limiter.limit(_LIMIT_VALIDATE)
+def validate(request: Request, req: ValidateRequest):
+    # `request` looks unused but slowapi requires a parameter named exactly
+    # "request" to extract the client IP for the per-IP rate-limit key.
+    del request
     try:
         ast = Parser().parse(req.expression)
     except ValueError as e:
@@ -384,7 +514,9 @@ def validate(req: ValidateRequest):
 
 
 @app.post("/api/simulate")
-def simulate(req: SimulationRequest):
+@limiter.limit(_LIMIT_SIMULATE)
+def simulate(request: Request, req: SimulationRequest):
+    del request  # required-by-name for slowapi; not used in the handler
     # Lint before evaluating so we catch look-ahead bias before any
     # inflated-Sharpe number ever leaves the server.
     try:
@@ -408,11 +540,24 @@ def simulate(req: SimulationRequest):
     # Surface any non-fatal lint warnings (long windows, zero shifts) so the
     # frontend can show them next to the dashboard.
     response["diagnostics"] = diagnostics
+    log.info(
+        "simulate",
+        extra={
+            "expression": req.expression,
+            "is_sharpe": response["is_metrics"].get("sharpe"),
+            "oos_sharpe": (response["oos_metrics"] or {}).get("sharpe"),
+            "neutralization": cfg.neutralization,
+            "run_oos": cfg.run_oos,
+            "n_warnings": len([d for d in diagnostics if d["severity"] == "warning"]),
+        },
+    )
     return response
 
 
 @app.post("/api/alphas/multi-blend")
-def multi_blend(req: MultiAlphaRequest):
+@limiter.limit(_LIMIT_SIMULATE)
+def multi_blend(request: Request, req: MultiAlphaRequest):
+    del request  # required-by-name for slowapi
     if not req.alphas:
         raise HTTPException(status_code=400, detail="No alphas provided")
 
@@ -440,7 +585,7 @@ def multi_blend(req: MultiAlphaRequest):
     return response
 
 
-@app.post("/api/alphas")
+@app.post("/api/alphas", dependencies=[Depends(require_api_token)])
 async def save_alpha(req: AlphaSaveRequest):
     alpha = _evaluate(req.expression)
     cfg = _make_config(req.settings)
@@ -476,6 +621,17 @@ async def save_alpha(req: AlphaSaveRequest):
         await db.commit()
         row_id = cursor.lastrowid
 
+    log.info(
+        "alpha.saved",
+        extra={
+            # `name` is a reserved LogRecord attribute (the logger name) — use
+            # `alpha_name` to avoid the KeyError on Record construction.
+            "alpha_id": row_id,
+            "alpha_name": req.name,
+            "expression": req.expression,
+            "sharpe": metrics.get("sharpe"),
+        },
+    )
     return {
         "id": row_id,
         "name": req.name,
@@ -523,13 +679,14 @@ async def get_alpha(alpha_id: int):
     return record
 
 
-@app.delete("/api/alphas/{alpha_id}")
+@app.delete("/api/alphas/{alpha_id}", dependencies=[Depends(require_api_token)])
 async def delete_alpha(alpha_id: int):
     async with connect() as db:
         cursor = await db.execute("DELETE FROM alphas WHERE id = ?", (alpha_id,))
         await db.commit()
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Alpha not found")
+    log.info("alpha.deleted", extra={"alpha_id": alpha_id})
     return {"deleted": alpha_id}
 
 

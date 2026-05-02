@@ -5,7 +5,10 @@
 let container = null;
 
 function ensureContainer() {
-  if (container) return container;
+  // Recreate if the container was detached (e.g. document.body cleared in tests
+  // or by a hot-reload).  Without this guard the cached ref keeps pointing at
+  // a detached node and toasts vanish silently.
+  if (container && container.isConnected) return container;
   container = document.createElement('div');
   container.className = 'toast-container';
   document.body.appendChild(container);

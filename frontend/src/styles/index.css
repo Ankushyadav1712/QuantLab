@@ -1547,3 +1547,92 @@ button.danger:hover:not(:disabled) {
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
 ::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: #444c56; }
+
+/* ========== Mobile / responsive layout ========== */
+
+/* Hamburger button — hidden by default (desktop), shown <=720px */
+.sidebar-toggle { display: none; }
+
+/* Off-canvas scrim — invisible on desktop */
+.sidebar-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 80;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.sidebar-scrim.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (max-width: 720px) {
+  /* Layout: collapse to single column, header stays at top */
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 56px 1fr;
+    grid-template-areas:
+      "header"
+      "main";
+  }
+
+  /* Sidebar becomes off-canvas drawer */
+  .sidebar {
+    grid-area: unset;
+    position: fixed;
+    top: 56px;
+    left: 0;
+    bottom: 0;
+    width: min(280px, 85vw);
+    z-index: 90;
+    transform: translateX(-100%);
+    transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+    border-right: 1px solid var(--border);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-scrim { display: block; top: 56px; }
+  .sidebar-toggle { display: inline-flex; }
+
+  /* Header tightens up */
+  .header { padding: 0 12px; gap: 8px; }
+  .header h1 { font-size: 16px; flex: 1; }
+  .header-actions { gap: 4px; }
+
+  /* Main content padding shrinks */
+  .main { padding: 12px 14px 60px; gap: 14px; }
+
+  /* Dashboard 6 cards → 2 columns instead of 3 */
+  .dashboard {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .metric-card { padding: 12px; }
+  .metric-card .value { font-size: 20px; }
+
+  /* Editor: shrink padding, tighter buttons */
+  .editor-section { padding: 12px; }
+  .editor-actions { flex-wrap: wrap; }
+  .editor-actions .save-action { margin-left: 0; }
+  .editor-actions button { font-size: 12px; padding: 6px 10px; }
+  .settings-toggle { padding: 5px 10px; }
+
+  /* Quick-insert chips wrap nicely */
+  .editor-quickrow button { padding: 3px 8px; font-size: 11px; }
+
+  /* Modals fill more of the small screen */
+  .modal { width: 94vw; padding: 16px; }
+  .modal h2 { font-size: 15px; }
+}
+
+/* Even tighter under 480px */
+@media (max-width: 480px) {
+  .dashboard {
+    grid-template-columns: 1fr;
+  }
+  .header h1 .logo-dot { width: 8px; height: 8px; }
+  .editor-quickrow { gap: 4px; }
+}
