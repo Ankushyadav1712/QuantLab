@@ -12,6 +12,10 @@ class SimulationRequest(BaseModel):
     # IS/OOS pair and the response carries both halves.  When False, only the
     # IS slot is populated (covering the full window) and OOS fields are null.
     run_oos: bool = True
+    # Number of distinct alpha expressions the researcher has tried in this
+    # session.  Fed into the Deflated Sharpe Ratio to discount the headline
+    # for selection bias — picking the best of many trials inflates Sharpe.
+    n_trials: int = 1
 
 
 class SimulationResponse(BaseModel):

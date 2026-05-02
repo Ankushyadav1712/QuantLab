@@ -164,6 +164,14 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
           <input type="checkbox" data-setting="run_walk_forward" />
           <span>Run walk-forward (rolling 252/63 windows · slower)</span>
         </label>
+        <label class="settings-toggle-row" style="margin-top:6px;">
+          <input type="checkbox" data-setting="t1_execution" />
+          <span>T+1 execution lag (signal at close → trade next open)</span>
+        </label>
+        <label class="settings-toggle-row" style="margin-top:6px;">
+          <input type="checkbox" data-setting="point_in_time_universe" />
+          <span>Point-in-time universe (gate names by index inclusion date)</span>
+        </label>
       </div>
 
       <div class="settings-footer">
@@ -193,6 +201,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
   const costModelSegmented = container.querySelector('[data-setting="cost_model"]');
   const oosCheckbox = container.querySelector('[data-setting="run_oos"]');
   const wfCheckbox = container.querySelector('[data-setting="run_walk_forward"]');
+  const t1Checkbox = container.querySelector('[data-setting="t1_execution"]');
+  const pitCheckbox = container.querySelector('[data-setting="point_in_time_universe"]');
   const oosBar = container.querySelector('[data-role="oos-bar"]');
 
   const decayValueEl = container.querySelector('[data-role="decay-value"]');
@@ -211,6 +221,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     run_oos: true,
     cost_model: 'flat',
     run_walk_forward: false,
+    t1_execution: false,
+    point_in_time_universe: false,
   };
 
   textarea.value = initialExpression;
@@ -276,6 +288,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     if (oosCheckbox.checked !== DEFAULTS.run_oos) n++;
     if (costModelSegmented.dataset.value !== DEFAULTS.cost_model) n++;
     if (wfCheckbox.checked !== DEFAULTS.run_walk_forward) n++;
+    if (t1Checkbox.checked !== DEFAULTS.t1_execution) n++;
+    if (pitCheckbox.checked !== DEFAULTS.point_in_time_universe) n++;
     return n;
   }
   function updateModifiedPill() {
@@ -399,6 +413,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     costSlider.value = DEFAULTS.transaction_cost_bps;
     oosCheckbox.checked = DEFAULTS.run_oos;
     wfCheckbox.checked = DEFAULTS.run_walk_forward;
+    t1Checkbox.checked = DEFAULTS.t1_execution;
+    pitCheckbox.checked = DEFAULTS.point_in_time_universe;
 
     // Segmented: reset to defaults
     neutSegmented.querySelectorAll('button').forEach((b) =>
@@ -531,6 +547,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
       run_oos: oosCheckbox.checked,
       cost_model: costModelSegmented.dataset.value,
       run_walk_forward: wfCheckbox.checked,
+      execution_lag_days: t1Checkbox.checked ? 2 : 1,
+      point_in_time_universe: pitCheckbox.checked,
     };
   }
   function setSaveEnabled(enabled) {

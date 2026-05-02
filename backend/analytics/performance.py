@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from analytics.deflated_sharpe import deflated_sharpe
 from engine.backtester import BacktestResult
 
 
@@ -34,6 +35,7 @@ class PerformanceAnalytics:
         self,
         result: BacktestResult,
         benchmark_returns: pd.Series | None = None,
+        n_trials: int = 1,
     ) -> dict[str, Any]:
         dates = pd.to_datetime(result.dates)
         daily_returns = pd.Series(result.daily_returns, index=dates).fillna(0.0)
@@ -156,6 +158,20 @@ class PerformanceAnalytics:
                 "n_days": int(len(group)),
             })
 
+        # Deflated Sharpe (Bailey & López de Prado): adjusts the headline
+        # Sharpe for the selection bias from running ``n_trials`` candidates.
+        # Pandas' .skew()/.kurt() return the sample versions; .kurt() is
+        # *excess* kurtosis, so add 3 for the formula's expected full kurt.
+        skew_val = float(daily_returns.skew()) if n > 3 else 0.0
+        kurt_val = float(daily_returns.kurt()) + 3.0 if n > 3 else 3.0
+        deflated = deflated_sharpe(
+            sharpe_annual=sharpe,
+            n_trials=max(1, int(n_trials)),
+            n_obs=n,
+            skew=skew_val if not math.isnan(skew_val) else 0.0,
+            kurt=kurt_val if not math.isnan(kurt_val) else 3.0,
+        )
+
         return {
             "sharpe": _safe_float(sharpe),
             "annual_return": _safe_float(annual_return),
@@ -177,6 +193,7 @@ class PerformanceAnalytics:
             "monthly_returns": monthly_returns,
             "yearly_returns": yearly_returns,
             "drawdown_series": _safe_list(drawdown.tolist()),
+            "deflated_sharpe": deflated,
             # Date range carried forward so compare_is_oos can build period
             # labels without needing the original BacktestResult.
             "start_date": result.dates[0] if result.dates else None,
