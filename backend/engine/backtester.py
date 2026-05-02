@@ -6,6 +6,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from data.sp100_history import build_membership_mask
 from engine import operators as ops
 
 
@@ -58,6 +59,23 @@ class SimulationConfig:
     walk_forward_train_days: int = 252
     walk_forward_test_days: int = 63
     walk_forward_step_days: int = 63
+
+    # Execution lag.  With ``1`` (default) we use the original convention:
+    # signal computed at close[t-1] earns close[t-1]→close[t] return on day t.
+    # With ``2`` we shift PnL realization an extra day to model the realistic
+    # T+1 case: a researcher can't see close[t] *and* trade at close[t] — the
+    # earliest fill is the next session's open, so the close[t] signal earns
+    # close[t+1]→close[t+2] (approximately).  The close-to-open gap captured by
+    # the extra day is the ~10–30 bps of slippage real desks pay and a flat-bps
+    # backtest silently ignores.
+    execution_lag_days: int = 1
+
+    # Point-in-time universe gating.  When True, alpha values for tickers that
+    # weren't yet in the S&P 100 on a given date are NaN-ed out before sizing —
+    # so e.g. TSLA can't be traded in 2019 just because it's in the index now.
+    # Off by default so existing saved alphas keep their headline numbers
+    # stable; opt in via the editor's settings panel.
+    point_in_time_universe: bool = False
 
 
 @dataclass
@@ -141,6 +159,15 @@ class Backtester:
         if alpha.empty:
             raise ValueError("Empty alpha slice passed to pipeline")
 
+        # Point-in-time gating: zero out alpha for any (date, ticker) where
+        # ticker wasn't yet an S&P 100 member on date.  Done before decay/
+        # neutralization so the masked entries don't leak through rolling ops.
+        if config.point_in_time_universe:
+            mask = build_membership_mask(
+                pd.DatetimeIndex(alpha.index), list(alpha.columns)
+            )
+            alpha = alpha.where(mask, other=0.0)
+
         # Optional decay before trading
         if config.decay and config.decay > 0:
             alpha = ops.decay_linear(alpha, config.decay)
@@ -159,13 +186,16 @@ class Backtester:
         # Position sizing — scale to dollar positions
         positions = weights * config.booksize
 
-        # Daily PnL: yesterday's dollar position × today's return
+        # Daily PnL: yesterday's dollar position × today's return.  When
+        # execution_lag_days > 1 we shift the position further into the past,
+        # capturing the "we couldn't trade at the close we just saw" friction.
         if "returns" not in self.data:
             raise ValueError("data['returns'] is required to compute PnL")
         returns = self.data["returns"].reindex(
             index=positions.index, columns=positions.columns
         )
-        stock_pnl = positions.shift(1) * returns
+        exec_lag = max(1, int(config.execution_lag_days))
+        stock_pnl = positions.shift(exec_lag) * returns
         gross_pnl = stock_pnl.sum(axis=1, skipna=True)
 
         # Transaction costs.  Per-stock |Δ$| matrix → flat spread/commission

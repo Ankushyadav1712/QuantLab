@@ -55,6 +55,26 @@ const correlation = createCorrelation(document.getElementById('correlation'));
 
 let lastResponse = null;
 
+// Session trial tracking — feeds into the Deflated Sharpe Ratio.  We count the
+// number of *distinct* expressions the user has run, since re-running the same
+// expression doesn't add a new selection-bias trial.  Persisted in localStorage
+// so the count survives reloads but resets if the user clears site data.
+const TRIALS_KEY = 'quantlab.tried_expressions';
+function loadTriedExpressions() {
+  try {
+    const raw = localStorage.getItem(TRIALS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch (_) { return new Set(); }
+}
+function recordExpressionTrial(expression) {
+  const tried = loadTriedExpressions();
+  tried.add(expression);
+  try { localStorage.setItem(TRIALS_KEY, JSON.stringify([...tried])); } catch (_) {}
+  return tried.size;
+}
+
 // ---------- Run / save ----------
 
 editor.setOnRun(async () => {
@@ -64,8 +84,9 @@ editor.setOnRun(async () => {
     return;
   }
   const settings = editor.getSettings();
+  const n_trials = recordExpressionTrial(expression);
   try {
-    const resp = await api.simulate(expression, settings);
+    const resp = await api.simulate(expression, settings, n_trials);
     renderResponse(resp);
     editor.setSaveEnabled(true);
     toast('Backtest complete', 'success', { duration: 2500 });
