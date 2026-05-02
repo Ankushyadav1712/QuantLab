@@ -178,6 +178,12 @@ def _make_config(
         decay=int(s.get("decay", 0)),
         oos_split=float(s.get("oos_split", 0.3)),
         run_oos=bool(s.get("run_oos", run_oos)),
+        cost_model=s.get("cost_model", "flat"),
+        impact_coefficient=float(s.get("impact_coefficient", 0.1)),
+        run_walk_forward=bool(s.get("run_walk_forward", False)),
+        walk_forward_train_days=int(s.get("walk_forward_train_days", 252)),
+        walk_forward_test_days=int(s.get("walk_forward_test_days", 63)),
+        walk_forward_step_days=int(s.get("walk_forward_step_days", 63)),
     )
 
 
@@ -193,6 +199,12 @@ def _config_to_dict(cfg: SimulationConfig) -> dict[str, Any]:
         "decay": cfg.decay,
         "oos_split": cfg.oos_split,
         "run_oos": cfg.run_oos,
+        "cost_model": cfg.cost_model,
+        "impact_coefficient": cfg.impact_coefficient,
+        "run_walk_forward": cfg.run_walk_forward,
+        "walk_forward_train_days": cfg.walk_forward_train_days,
+        "walk_forward_test_days": cfg.walk_forward_test_days,
+        "walk_forward_step_days": cfg.walk_forward_step_days,
     }
 
 
@@ -228,6 +240,8 @@ def _compute_perf_pack(result, perf: PerformanceAnalytics, *, spy: pd.Series | N
     # Pass period info into compare_is_oos through the metrics dict
     metrics["start_date"] = full.get("start_date")
     metrics["end_date"] = full.get("end_date")
+    # Per-year breakdown surfaces regime fragility that the headline averages out
+    metrics["yearly_returns"] = full.get("yearly_returns", [])
 
     timeseries = {
         "dates": list(result.dates),
@@ -284,6 +298,13 @@ def _build_response(
         else None
     )
 
+    # Walk-forward analysis (rolling train→test).  Off by default since it
+    # costs ~20× the compute of a single backtest.  When the requested window
+    # is too short for even one window the helper returns [] silently.
+    walk_forward_windows: list[dict] | None = None
+    if cfg.run_walk_forward:
+        walk_forward_windows = bt.walk_forward(alpha_matrix, cfg)
+
     return {
         "is_metrics": is_metrics,
         "oos_metrics": oos_metrics,
@@ -291,6 +312,7 @@ def _build_response(
         "oos_timeseries": oos_timeseries,
         "overfitting_analysis": overfitting,
         "factor_decomposition": factor_decomp,
+        "walk_forward": walk_forward_windows,
         "monthly_returns": monthly_returns,
         "expression": expression,
         "settings": _config_to_dict(cfg),

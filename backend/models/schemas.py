@@ -22,6 +22,8 @@ class SimulationResponse(BaseModel):
     is_timeseries: dict[str, Any]
     oos_timeseries: dict[str, Any] | None = None
     overfitting_analysis: dict[str, Any] | None = None
+    factor_decomposition: dict[str, Any] | None = None
+    walk_forward: list[dict[str, Any]] | None = None
 
     monthly_returns: list[list[Any]]
     expression: str

@@ -459,6 +459,7 @@ function renderResponse(resp) {
     overfitting_analysis: resp.overfitting_analysis || null,
     data_quality: resp.data_quality || null,
     factor_decomposition: resp.factor_decomposition || null,
+    walk_forward: resp.walk_forward || null,
   });
   charts.setData(isTs, resp.monthly_returns, {
     oos_timeseries: resp.oos_timeseries || null,
