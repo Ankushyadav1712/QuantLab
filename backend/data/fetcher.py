@@ -252,3 +252,52 @@ class DataFetcher:
         if not self._frames:
             self.download_universe()
         return self._matrix.get(field, pd.DataFrame())
+
+    # ---------- lazy expansion (custom universes) ----------
+
+    def ensure_tickers(
+        self,
+        tickers: Iterable[str],
+        start: str = DATA_START,
+        end: str = DATA_END,
+    ) -> list[str]:
+        """Download any tickers not already in `_frames` and rebuild matrices.
+
+        Returns the list of tickers that *failed* to load (yfinance returned
+        nothing).  Callers can surface this so the user knows which symbols
+        from a custom universe were silently dropped.
+
+        Idempotent: tickers already present are skipped.  Rebuilds derived
+        matrices since the column set has changed.
+        """
+        wanted = [t.upper().strip() for t in tickers if t and t.strip()]
+        missing = [t for t in wanted if t not in self._frames]
+        if not missing:
+            return []
+
+        failed: list[str] = []
+        for t in missing:
+            path = self._cache_path(t)
+            if self._is_cache_fresh(path):
+                try:
+                    self._frames[t] = pd.read_parquet(path)
+                    continue
+                except Exception:
+                    pass
+            df = self._download_one(t, start, end)
+            if df is None:
+                failed.append(t)
+                continue
+            try:
+                df.to_parquet(path)
+            except Exception:
+                pass
+            self._frames[t] = df
+
+        # Derived caches were keyed by the prior column set — recompute now.
+        # Skip the per-field on-disk caches; they were stale the moment we
+        # added a new ticker, and rewriting them on every custom-universe
+        # request would just churn the cache for no benefit.
+        self._matrix.clear()
+        self._build_matrices(compute_derived=True)
+        return failed

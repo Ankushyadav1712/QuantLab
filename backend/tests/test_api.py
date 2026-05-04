@@ -203,6 +203,67 @@ def test_alpha_full_lifecycle(client):
             client.delete(f"/api/alphas/{aid}")
 
 
+def test_universes_endpoint_lists_presets(client):
+    r = client.get("/api/universes")
+    assert r.status_code == 200
+    body = r.json()
+    assert "universes" in body and "default" in body
+    ids = [u["id"] for u in body["universes"]]
+    assert "sp100_50" in ids
+    # Each preset must surface its available neutralizations + ticker count
+    for u in body["universes"]:
+        assert isinstance(u["ticker_count"], int) and u["ticker_count"] > 0
+        assert "available_neutralizations" in u
+        assert "none" in u["available_neutralizations"]
+        assert "market" in u["available_neutralizations"]
+    assert body["default"] in ids
+
+
+def test_simulate_accepts_universe_id_and_echoes_it(client):
+    r = client.post(
+        "/api/simulate",
+        json={
+            "expression": "rank(close)",
+            "settings": {"universe_id": "sp100_50", "run_oos": False},
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["settings"].get("universe_id") == "sp100_50"
+    assert body["data_quality"]["universe"]["id"] == "sp100_50"
+
+
+def test_simulate_rejects_unknown_universe_id(client):
+    r = client.post(
+        "/api/simulate",
+        json={
+            "expression": "rank(close)",
+            "settings": {"universe_id": "totally-fake-universe", "run_oos": False},
+        },
+    )
+    assert r.status_code == 400
+    assert "unknown universe" in r.json()["detail"].lower()
+
+
+def test_simulate_with_industry_neutralization(client):
+    """End-to-end: a built-in universe + the new 'industry' neutralization
+    mode runs without error and the response echoes the chosen mode."""
+    r = client.post(
+        "/api/simulate",
+        json={
+            "expression": "rank(close)",
+            "settings": {
+                "universe_id": "sp100_50",
+                "neutralization": "industry",
+                "run_oos": False,
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["settings"]["neutralization"] == "industry"
+
+
 def test_multi_blend_returns_simulate_shape(client):
     """Multi-blend must produce a full IS/OOS response, same shape as /simulate."""
     r = client.post(
