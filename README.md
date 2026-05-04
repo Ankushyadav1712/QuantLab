@@ -4,10 +4,10 @@ A quantitative backtesting platform for cross-sectional alpha research on US equ
 
 ## Project overview
 
-- **Universe** — 50 liquid S&P 100 names with GICS sectors (configurable).
+- **Universe** — picker over built-in presets (S&P 100 top-50, S&P 100 extended ~75, NASDAQ-100 subset, Tech/Comm Services focus) plus a custom-tickers mode that lazy-loads from yfinance. Full GICS catalog (sector / industry group / industry / sub-industry).
 - **Data** — daily OHLCV from yfinance, parquet-cached (24h TTL). 32 fields available in expressions: 7 base (open/high/low/close/volume/returns/vwap) + 25 derived (momentum, vol, liquidity, candle structure, etc.).
 - **Engine** — recursive-descent parser → AST evaluator → vectorised pandas backtester. 23 operators (rolling, cross-sectional, arithmetic, conditional).
-- **Backtest** — neutralization (`none`/`market`/`sector`), truncation, booksize sizing, transaction costs in bps, optional decay.
+- **Backtest** — neutralization across all 4 GICS levels (`none`/`market`/`sector`/`industry_group`/`industry`/`sub_industry`), truncation, booksize sizing, transaction costs in bps, optional decay.
 - **Analytics** — Sharpe, CAGR, Sortino, Calmar, max drawdown, turnover, fitness, win rate, profit factor, beta vs SPY, information ratio, rolling 63-day Sharpe, monthly returns heatmap, **Fama-French 5-factor decomposition** (residual alpha + factor loadings with t-stats), **IS/OOS split** with overfitting verdict.
 - **Persistence** — SQLite for saved alphas + cached results; multi-blend and pairwise-correlation endpoints across saved alphas.
 
@@ -47,7 +47,7 @@ A quantitative backtesting platform for cross-sectional alpha research on US equ
 | Persistence | SQLite via aiosqlite |
 | Frontend | Vite + Vanilla JS (no framework) |
 | Charts | TradingView Lightweight Charts (CDN, v4.2.3) + Canvas + CSS grid |
-| Testing | pytest (130 tests), GitHub Actions CI |
+| Testing | pytest (169 tests), GitHub Actions CI |
 | Container | Docker (multi-stage), nginx for static frontend |
 | Deploy | Render (web + static services), Vercel (frontend) |
 
@@ -85,7 +85,8 @@ npm run dev                                # http://localhost:5173
 | Method | Path | What it does |
 |---|---|---|
 | GET  | `/health` | liveness probe |
-| GET  | `/api/universe` | tickers + GICS sector map |
+| GET  | `/api/universe` | legacy: default preset's tickers + sector map (kept for v1 clients) |
+| GET  | `/api/universes` | all built-in presets + their available neutralization modes |
 | GET  | `/api/operators` | 23 operators + 32 fields with descriptions |
 | POST | `/api/validate` | `{expression}` → `{valid, error}` (pure parse check) |
 | POST | `/api/simulate` | `{expression, settings}` → IS/OOS metrics + timeseries + monthly_returns + factor decomposition + data-quality disclosure |
@@ -151,6 +152,7 @@ QuantLab/
 │   ├── data/
 │   │   ├── fetcher.py               yfinance + 32-field matrix builder
 │   │   ├── factors.py               Fama-French 5 factor download + cache
+│   │   ├── universes.py             preset registry + GICS catalog (sector/industry/sub-industry)
 │   │   └── universe.py
 │   ├── engine/
 │   │   ├── parser.py                tokenizer + recursive-descent parser
@@ -196,7 +198,7 @@ QuantLab/
 backend/.venv/bin/pytest backend/tests/ -v
 ```
 
-130 tests covering parser (operators + invalid syntax + precedence), operators (synthetic 100×10 fixture against pandas), backtester (constant-alpha invariants, turnover ≥ 0, cost-vs-zero-cost, IS/OOS partitioning), the look-ahead-bias linter, the Fama-French 5-factor decomposition (synthetic-truth recovery), and the API (TestClient-based, including the full save → load → correlate cycle).
+169 tests covering parser (operators + invalid syntax + precedence), operators (synthetic 100×10 fixture against pandas), backtester (constant-alpha invariants, turnover ≥ 0, cost-vs-zero-cost, IS/OOS partitioning, T+1 execution lag), the look-ahead-bias linter, the Fama-French 5-factor decomposition (synthetic-truth recovery), Deflated Sharpe Ratio formula sanity, point-in-time universe gating, the universe registry + GICS-mode neutralization (all 4 levels), and the API (TestClient-based, including the full save → load → correlate cycle).
 
 CI runs the same suite on every push to `main` via `.github/workflows/ci.yml`.
 
@@ -204,7 +206,7 @@ CI runs the same suite on every push to `main` via `.github/workflows/ci.yml`.
 
 These are honest gaps, not promises.  The platform's metrics should be read in light of them.
 
-- **Survivorship bias.** The universe is the *current* S&P 100, not point-in-time index membership.  Names that were in the index in 2019 but got delisted, acquired, or removed by 2024 are absent.  Estimated Sharpe inflation: **0.1–0.3** for typical strategies.  Proper fix needs paid PIT data (CRSP / Norgate / Sharadar).  The dashboard surfaces this as a banner on every backtest.
+- **Survivorship bias.** Every preset universe is a *current* index snapshot, not point-in-time membership.  Names that were in the index in 2019 but got delisted, acquired, or removed by 2024 are absent.  Estimated Sharpe inflation: **0.1–0.3** for typical strategies.  Proper fix needs paid PIT data (CRSP / Norgate / Sharadar).  The dashboard surfaces this as a banner on every backtest.
 - **Naïve transaction cost model.** Flat bps regardless of trade size or stock liquidity.  Real cost ≈ half-spread + market impact (∝ √(trade_size / ADV)) + commission + borrow.  The platform has `adv20` as a field but doesn't use it for cost modeling — high-turnover alphas look better here than they would live.
 - **No execution-lag model.** Assumes signal-at-close = trade-at-close.  Real desks sign at close, trade at next open.  Adds 10–30 bps of slippage we ignore.
 - **No borrow cost on shorts.** Market-neutral strategies have a 1–3 % per-year cost we don't charge.

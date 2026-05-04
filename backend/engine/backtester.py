@@ -33,7 +33,9 @@ class SimulationConfig:
     universe: list[str]
     start_date: str
     end_date: str
-    neutralization: Literal["none", "market", "sector"] = "market"
+    neutralization: Literal[
+        "none", "market", "sector", "industry_group", "industry", "sub_industry"
+    ] = "market"
     truncation: float = 0.05
     booksize: float = 20_000_000
     transaction_cost_bps: float = 5.0
@@ -90,9 +92,27 @@ class BacktestResult:
 
 
 class Backtester:
-    def __init__(self, data: dict[str, pd.DataFrame], sector_map: dict[str, str]):
+    def __init__(
+        self,
+        data: dict[str, pd.DataFrame],
+        sector_map: dict[str, str] | None = None,
+        gics_map: dict[str, dict[str, str | None]] | None = None,
+    ):
+        """``gics_map`` maps ticker → {sector, industry_group, industry,
+        sub_industry}.  When supplied it supersedes ``sector_map`` (the latter
+        is kept for backwards compatibility with callers that haven't migrated
+        to the GICS-aware path — the API and tests pass ``gics_map`` directly).
+        """
         self.data = data
-        self.sector_map = sector_map
+        self.sector_map = sector_map or {}
+        self.gics_map = gics_map or {}
+        # Synthesize sector_map from gics_map if only the latter was given —
+        # keeps the legacy 'sector' code path working without branching.
+        if gics_map and not sector_map:
+            self.sector_map = {
+                t: row.get("sector") or "Unknown"
+                for t, row in gics_map.items()
+            }
 
     def run(
         self, alpha_matrix: pd.DataFrame, config: SimulationConfig
@@ -319,19 +339,46 @@ class Backtester:
 
         return results
 
+    # Modes that key off the GICS map: per-group cross-sectional demean at the
+    # level named by the mode string.  All four behave identically — they
+    # differ only in which column of the gics_map they use to form groups.
+    _GICS_MODES = ("sector", "industry_group", "industry", "sub_industry")
+
     def _neutralize(self, alpha: pd.DataFrame, mode: str) -> pd.DataFrame:
         if mode == "none":
             return alpha
         if mode == "market":
             return alpha.sub(alpha.mean(axis=1, skipna=True), axis=0)
-        if mode == "sector":
-            sectors = pd.Series(
-                {t: self.sector_map.get(t, "Unknown") for t in alpha.columns}
-            )
-            out = alpha.copy()
-            for _sector, group in sectors.groupby(sectors):
-                cols = list(group.index)
-                sub = alpha[cols]
-                out[cols] = sub.sub(sub.mean(axis=1, skipna=True), axis=0)
-            return out
+        if mode in self._GICS_MODES:
+            return self._neutralize_by_gics(alpha, mode)
         raise ValueError(f"Unknown neutralization mode: {mode!r}")
+
+    def _neutralize_by_gics(self, alpha: pd.DataFrame, level: str) -> pd.DataFrame:
+        """Cross-sectional demean per GICS group at ``level``.
+
+        Tickers without a classification at this level (or universe members
+        absent from the GICS map entirely) are bucketed together as
+        ``"Unknown"`` — better than silently dropping them.
+        """
+        # The legacy `sector` path used `sector_map`; the GICS-aware paths use
+        # `gics_map`.  When both are present, gics_map wins (it's the strictly
+        # richer source).
+        def lookup(t: str) -> str:
+            row = self.gics_map.get(t)
+            if row is not None:
+                val = row.get(level)
+                if val:
+                    return val
+            if level == "sector":
+                return self.sector_map.get(t, "Unknown")
+            return "Unknown"
+
+        groups = pd.Series({t: lookup(t) for t in alpha.columns})
+        out = alpha.copy()
+        for _grp, members in groups.groupby(groups):
+            cols = list(members.index)
+            if not cols:
+                continue
+            sub = alpha[cols]
+            out[cols] = sub.sub(sub.mean(axis=1, skipna=True), axis=0)
+        return out
