@@ -57,4 +57,5 @@ export const api = {
     request('POST', '/api/alphas/correlations', { alpha_ids: ids }),
   getOperators: () => request('GET', '/api/operators'),
   getUniverse: () => request('GET', '/api/universe'),
+  getUniverses: () => request('GET', '/api/universes'),
 };

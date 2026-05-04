@@ -529,6 +529,60 @@ li.diag-warning .diag-tag { background: rgba(240, 160, 32, 0.25); color: var(--a
   color: var(--accent-blue);
   box-shadow: 0 0 0 1px var(--border);
 }
+.settings-segmented button.disabled,
+.settings-segmented button:disabled {
+  color: rgba(140, 148, 158, 0.45);
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+.settings-segmented-wrap {
+  flex-wrap: wrap;
+}
+
+/* ---------- Universe selector ---------- */
+
+.settings-select {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.settings-select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.settings-custom-tickers {
+  margin-top: 6px;
+  width: 100%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+.settings-custom-tickers:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.settings-universe-warn {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--accent-orange);
+  padding: 6px 8px;
+  background: rgba(240, 160, 32, 0.06);
+  border: 1px solid rgba(240, 160, 32, 0.25);
+  border-radius: 6px;
+}
 
 /* ---------- Custom slider ---------- */
 
