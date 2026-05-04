@@ -101,14 +101,33 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
         </div>
       </div>
 
+      <!-- Universe -->
+      <div class="settings-block" data-block="universe">
+        <div class="settings-block-head">
+          <span class="settings-block-label">Universe</span>
+          <span class="settings-value" data-role="universe-meta"></span>
+        </div>
+        <select class="settings-select" data-setting="universe_id"></select>
+        <textarea
+          class="settings-custom-tickers"
+          data-setting="custom_tickers"
+          rows="3"
+          placeholder="Comma- or newline-separated tickers (e.g. AAPL, MSFT, GOOG)"
+          hidden></textarea>
+        <div class="settings-universe-warn" data-role="universe-warn" hidden></div>
+      </div>
+
       <!-- Strategy: neutralization (segmented) + decay (slider) -->
       <div class="settings-grid">
-        <div class="settings-block" data-block="neutralization">
+        <div class="settings-block" data-block="neutralization" style="grid-column: span 2;">
           <div class="settings-block-label">Neutralization</div>
-          <div class="settings-segmented" data-setting="neutralization" data-value="market">
+          <div class="settings-segmented settings-segmented-wrap" data-setting="neutralization" data-value="market">
             <button type="button" data-value="none">None</button>
             <button type="button" data-value="market" class="active">Market</button>
             <button type="button" data-value="sector">Sector</button>
+            <button type="button" data-value="industry_group">Industry Group</button>
+            <button type="button" data-value="industry">Industry</button>
+            <button type="button" data-value="sub_industry">Sub-Industry</button>
           </div>
         </div>
 
@@ -204,6 +223,10 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
   const t1Checkbox = container.querySelector('[data-setting="t1_execution"]');
   const pitCheckbox = container.querySelector('[data-setting="point_in_time_universe"]');
   const oosBar = container.querySelector('[data-role="oos-bar"]');
+  const universeSelect = container.querySelector('[data-setting="universe_id"]');
+  const customTickersTA = container.querySelector('[data-setting="custom_tickers"]');
+  const universeMetaEl = container.querySelector('[data-role="universe-meta"]');
+  const universeWarnEl = container.querySelector('[data-role="universe-warn"]');
 
   const decayValueEl = container.querySelector('[data-role="decay-value"]');
   const booksizeValueEl = container.querySelector('[data-role="booksize-value"]');
@@ -211,6 +234,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
   const costValueEl = container.querySelector('[data-role="cost-value"]');
 
   const DEFAULTS = {
+    universe_id: 'sp100_50',
+    custom_tickers: '',
     start_date: '2019-01-01',
     end_date: '2024-12-31',
     neutralization: 'market',
@@ -265,6 +290,102 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     debouncedValidate();
   }
 
+  // ---------- Universe selection ----------
+  // Populated asynchronously from /api/universes; until then the dropdown is
+  // empty and falls back to whatever the backend defaults to.  Each preset
+  // carries its `available_neutralizations` so we can grey out modes the
+  // chosen universe doesn't have enough GICS depth for (e.g. custom universe
+  // with no GICS map only supports none/market).
+  let universeMeta = {};  // id → { name, ticker_count, available_neutralizations }
+  const CUSTOM_ID = 'custom';
+
+  function syncUniverseUI() {
+    const id = universeSelect.value || DEFAULTS.universe_id;
+    customTickersTA.hidden = (id !== CUSTOM_ID);
+
+    let meta = universeMeta[id];
+    if (id === CUSTOM_ID) {
+      const n = parseTickers(customTickersTA.value).length;
+      meta = { ticker_count: n, available_neutralizations: ['none', 'market'] };
+      universeMetaEl.textContent = n ? `${n} custom tickers` : 'enter tickers below';
+    } else if (meta) {
+      universeMetaEl.textContent = `${meta.ticker_count} tickers`;
+    } else {
+      universeMetaEl.textContent = '';
+    }
+
+    // Disable neutralization buttons whose mode isn't supported here
+    const allowed = new Set(meta?.available_neutralizations || ['none', 'market']);
+    let activeStillAllowed = false;
+    neutSegmented.querySelectorAll('button').forEach((b) => {
+      const supported = allowed.has(b.dataset.value);
+      b.disabled = !supported;
+      b.classList.toggle('disabled', !supported);
+      if (supported && b.classList.contains('active')) activeStillAllowed = true;
+    });
+    if (!activeStillAllowed) {
+      // Snap to 'market' (always available) if the previously-active mode was disabled
+      neutSegmented.querySelectorAll('button').forEach((b) =>
+        b.classList.toggle('active', b.dataset.value === 'market')
+      );
+      neutSegmented.dataset.value = 'market';
+    }
+
+    if (id === CUSTOM_ID) {
+      universeWarnEl.hidden = false;
+      universeWarnEl.textContent =
+        'Custom universe — sector / industry / sub-industry neutralization is unavailable until tickers have GICS metadata in the catalog.';
+    } else {
+      universeWarnEl.hidden = true;
+    }
+  }
+
+  function parseTickers(text) {
+    return text
+      .split(/[\s,;\n]+/)
+      .map((t) => t.trim().toUpperCase())
+      .filter(Boolean);
+  }
+
+  function loadUniverses() {
+    api.getUniverses()
+      .then(({ universes, default: defaultId }) => {
+        // Build the dropdown options
+        universeSelect.innerHTML = '';
+        for (const u of universes) {
+          universeMeta[u.id] = u;
+          const opt = document.createElement('option');
+          opt.value = u.id;
+          opt.textContent = `${u.name} · ${u.ticker_count}`;
+          opt.title = u.description;
+          universeSelect.appendChild(opt);
+        }
+        // Always offer "Custom" at the bottom
+        const customOpt = document.createElement('option');
+        customOpt.value = CUSTOM_ID;
+        customOpt.textContent = 'Custom (paste tickers below)';
+        universeSelect.appendChild(customOpt);
+
+        universeSelect.value = defaultId || DEFAULTS.universe_id;
+        DEFAULTS.universe_id = defaultId || DEFAULTS.universe_id;
+        syncUniverseUI();
+      })
+      .catch(() => {
+        // Network failure or pre-Phase-1 backend — leave empty, simulate falls
+        // back to the backend's default universe silently.
+      });
+  }
+
+  universeSelect.addEventListener('change', () => {
+    syncUniverseUI();
+    updateModifiedPill();
+  });
+  customTickersTA.addEventListener('input', () => {
+    syncUniverseUI();
+    updateModifiedPill();
+  });
+  loadUniverses();
+
   // Settings panel toggle (animated). The button keeps its own .open state so
   // CSS can animate the caret + active-state styling independently.
   settingsToggle.addEventListener('click', () => {
@@ -290,6 +411,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     if (wfCheckbox.checked !== DEFAULTS.run_walk_forward) n++;
     if (t1Checkbox.checked !== DEFAULTS.t1_execution) n++;
     if (pitCheckbox.checked !== DEFAULTS.point_in_time_universe) n++;
+    if (universeSelect.value && universeSelect.value !== DEFAULTS.universe_id) n++;
+    if (customTickersTA.value.trim() !== DEFAULTS.custom_tickers) n++;
     return n;
   }
   function updateModifiedPill() {
@@ -369,7 +492,7 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
   function wireSegmented(el) {
     el.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-value]');
-      if (!btn) return;
+      if (!btn || btn.disabled) return;
       el.querySelectorAll('button').forEach((b) =>
         b.classList.toggle('active', b === btn)
       );
@@ -415,6 +538,9 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     wfCheckbox.checked = DEFAULTS.run_walk_forward;
     t1Checkbox.checked = DEFAULTS.t1_execution;
     pitCheckbox.checked = DEFAULTS.point_in_time_universe;
+    universeSelect.value = DEFAULTS.universe_id;
+    customTickersTA.value = DEFAULTS.custom_tickers;
+    syncUniverseUI();
 
     // Segmented: reset to defaults
     neutSegmented.querySelectorAll('button').forEach((b) =>
@@ -536,7 +662,7 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     debouncedValidate();
   }
   function getSettings() {
-    return {
+    const out = {
       start_date: startInput.value,
       end_date: endInput.value,
       neutralization: neutSegmented.dataset.value,
@@ -550,6 +676,14 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
       execution_lag_days: t1Checkbox.checked ? 2 : 1,
       point_in_time_universe: pitCheckbox.checked,
     };
+    // Universe — `universe` (explicit list) takes precedence over `universe_id`
+    // on the backend, so only send one of them based on the dropdown choice.
+    if (universeSelect.value === CUSTOM_ID) {
+      out.universe = parseTickers(customTickersTA.value);
+    } else if (universeSelect.value) {
+      out.universe_id = universeSelect.value;
+    }
+    return out;
   }
   function setSaveEnabled(enabled) {
     saveBtn.disabled = !enabled;

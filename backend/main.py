@@ -29,11 +29,18 @@ from config import (
     DEFAULT_BOOKSIZE,
     ENVIRONMENT,
     SECTOR_MAP,
-    UNIVERSE,
 )
 from data.factors import download_ff5_daily
 from data.fetcher import ALL_FIELDS, DataFetcher
 from data.sp100_history import membership_summary
+from data.universes import (
+    all_tickers as universe_all_tickers,
+    available_neutralizations,
+    default_universe_id,
+    get_universe,
+    gics_for,
+    list_universes,
+)
 from db.database import connect
 from db.migrations import init_db
 from engine.backtester import Backtester, SimulationConfig
@@ -134,7 +141,11 @@ async def lifespan(_app: FastAPI):
     await init_db()
 
     fetcher = DataFetcher()
-    fetcher.download_universe()  # idempotent — fast on cache hit
+    # Load the union of every built-in universe so that switching universes
+    # at request time is just a column-filter on already-resolved matrices.
+    # Custom universes (Phase 2) lazy-load any tickers missing from this set.
+    pool = sorted(universe_all_tickers())
+    fetcher.download_universe(tickers=pool)
 
     spy_fetcher = DataFetcher()
     spy_frames = spy_fetcher.download_universe(
@@ -159,6 +170,7 @@ async def lifespan(_app: FastAPI):
             "environment": ENVIRONMENT,
             "n_fields": len(_state["data"]),
             "n_tickers": len(fetcher._frames) if hasattr(fetcher, "_frames") else 0,
+            "n_universes": len(list_universes()),
             "ff5_present": bool(ff5 is not None and not ff5.empty),
             "auth_enabled": bool(API_TOKEN),
         },
@@ -290,12 +302,56 @@ def require_api_token(authorization: str | None = Header(default=None)) -> None:
 # ---------- Helpers ----------
 
 
+def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, str | None]], str]:
+    """Pick the ticker list + GICS map from request settings.
+
+    Resolution priority:
+        1. ``universe`` (explicit ticker list) — Phase 2 custom universe
+        2. ``universe_id`` (built-in preset id)
+        3. Default preset id (currently ``sp100_50``)
+
+    For custom universes, lazy-loads any tickers not already in the data pool
+    and rebuilds the matrices.  Tickers yfinance can't find are dropped with a
+    400 if every supplied ticker fails (the backtest would be empty otherwise).
+    """
+    custom = settings.get("universe")
+    if custom and isinstance(custom, list) and len(custom) > 0:
+        tickers = [str(t).upper().strip() for t in custom if str(t).strip()]
+        if not tickers:
+            raise HTTPException(status_code=400, detail="Custom universe is empty")
+        # Lazy-fetch anything new.  Replaces _state["data"] in place since the
+        # column set has expanded — the evaluator must see the new tickers.
+        fetcher: DataFetcher = _state["fetcher"]
+        failed = fetcher.ensure_tickers(tickers)
+        # Refresh the matrices snapshot the rest of the request reads from
+        _state["data"] = {field: fetcher.get_data_matrix(field) for field in DATA_FIELDS}
+        live = [t for t in tickers if t not in failed]
+        if not live:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"None of the {len(tickers)} custom tickers could be loaded "
+                    f"from yfinance: {', '.join(failed[:10])}"
+                    + ("…" if len(failed) > 10 else "")
+                ),
+            )
+        return live, gics_for(live), "custom"
+
+    uid = settings.get("universe_id") or default_universe_id()
+    try:
+        u = get_universe(uid)
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return u["tickers"], u["gics"], uid
+
+
 def _make_config(
     settings: dict | None, *, run_oos: bool = True
 ) -> SimulationConfig:
     s = settings or {}
+    tickers, _, _ = _resolve_universe(s)
     return SimulationConfig(
-        universe=s.get("universe") or UNIVERSE,
+        universe=tickers,
         start_date=s.get("start_date") or DATA_START,
         end_date=s.get("end_date") or DATA_END,
         neutralization=s.get("neutralization", "market"),
@@ -395,8 +451,13 @@ def _build_response(
     cfg: SimulationConfig,
     *,
     n_trials: int = 1,
+    gics_map: dict[str, dict[str, str | None]] | None = None,
+    universe_id: str | None = None,
 ) -> dict[str, Any]:
-    bt = Backtester(_state["data"], SECTOR_MAP)
+    # Backtester gets the full GICS row per ticker so neutralization can pick
+    # any of the four GICS levels.  Falls back to the legacy SECTOR_MAP only
+    # for callers that haven't been updated to plumb gics_map through.
+    bt = Backtester(_state["data"], sector_map=SECTOR_MAP, gics_map=gics_map)
     try:
         is_result, oos_result = bt.run(alpha_matrix, cfg)
     except ValueError as e:
@@ -446,6 +507,9 @@ def _build_response(
     if cfg.run_walk_forward:
         walk_forward_windows = bt.walk_forward(alpha_matrix, cfg)
 
+    settings_out = _config_to_dict(cfg)
+    if universe_id:
+        settings_out["universe_id"] = universe_id
     return {
         "is_metrics": is_metrics,
         "oos_metrics": oos_metrics,
@@ -456,21 +520,42 @@ def _build_response(
         "walk_forward": walk_forward_windows,
         "monthly_returns": monthly_returns,
         "expression": expression,
-        "settings": _config_to_dict(cfg),
-        "data_quality": _data_quality(cfg, alpha_matrix),
+        "settings": settings_out,
+        "data_quality": _data_quality(cfg, alpha_matrix, universe_id=universe_id, gics_map=gics_map),
     }
 
 
-def _data_quality(cfg: SimulationConfig, alpha_matrix: pd.DataFrame) -> dict[str, Any]:
+def _data_quality(
+    cfg: SimulationConfig,
+    alpha_matrix: pd.DataFrame,
+    *,
+    universe_id: str | None = None,
+    gics_map: dict[str, dict[str, str | None]] | None = None,
+) -> dict[str, Any]:
     """Honest disclosure of universe biases that headline metrics inherit."""
+    universe_label = universe_id or default_universe_id()
+    universe_block: dict[str, Any] = {
+        "id": universe_label,
+        "ticker_count": len(cfg.universe),
+    }
+    if gics_map is not None:
+        universe_block["available_neutralizations"] = available_neutralizations(gics_map)
+        unknown = [t for t, row in gics_map.items() if not row.get("sector")]
+        universe_block["tickers_without_gics"] = unknown
     notes = [
-        "Universe is the *current* S&P 100, not point-in-time index "
-        "membership. Names that were in the index in 2019 but got "
-        "delisted, acquired, or removed by 2024 are absent — survivorship "
-        "bias inflates Sharpe by an estimated 0.1–0.3.",
+        f"Universe in use: {universe_label} ({len(cfg.universe)} tickers). "
+        "Each preset is a *current* index snapshot — names that left the "
+        "index during the backtest window are absent (survivorship bias). "
+        "Estimated Sharpe inflation: 0.1–0.3.",
         "Proper survivorship-free backtests require paid PIT data "
         "(CRSP / Norgate / Sharadar). Documented in README → Drawbacks.",
     ]
+    if gics_map is not None and any(not row.get("sector") for row in gics_map.values()):
+        notes.append(
+            "Some tickers in this custom universe have no GICS classification "
+            "in the catalog — sector / industry / sub_industry neutralization "
+            "modes will treat them as 'Unknown' and bucket them together."
+        )
     pit_block: dict[str, Any] = {"enabled": bool(cfg.point_in_time_universe)}
     if cfg.point_in_time_universe:
         try:
@@ -507,6 +592,7 @@ def _data_quality(cfg: SimulationConfig, alpha_matrix: pd.DataFrame) -> dict[str
         "survivorship_bias": True,
         "universe_kind": "current_snapshot",
         "expected_sharpe_inflation": 0.2,
+        "universe": universe_block,
         "point_in_time": pit_block,
         "notes": notes,
     }
@@ -521,8 +607,31 @@ def health():
 
 
 @app.get("/api/universe")
-def get_universe():
-    return {"tickers": list(UNIVERSE), "sectors": dict(SECTOR_MAP)}
+def get_default_universe():
+    """Legacy single-universe endpoint.  Returns the default preset's tickers
+    plus the sector map for backwards compatibility with v1 clients.  New
+    clients should use /api/universes (plural) for the full preset registry."""
+    default = get_universe(default_universe_id())
+    sectors = {t: row.get("sector") or "Unknown" for t, row in default["gics"].items()}
+    return {"tickers": list(default["tickers"]), "sectors": sectors}
+
+
+@app.get("/api/universes")
+def get_universes():
+    """All built-in universes + which neutralization modes each one supports.
+
+    The frontend uses this to populate the universe dropdown and disable
+    GICS-level neutralization options when the chosen universe doesn't have
+    enough distinct groups at that level.
+    """
+    out = []
+    for u in list_universes():
+        full = get_universe(u["id"])
+        out.append({
+            **u,
+            "available_neutralizations": available_neutralizations(full["gics"]),
+        })
+    return {"universes": out, "default": default_universe_id()}
 
 
 @app.get("/api/operators")
@@ -584,8 +693,14 @@ def simulate(request: Request, req: SimulationRequest):
     # The body's `run_oos` flag wins over anything inside `settings` so
     # callers can toggle the split without rebuilding their settings dict.
     cfg = _make_config(req.settings, run_oos=req.run_oos)
+    _, gics_map, universe_id = _resolve_universe(req.settings or {})
     response = _build_response(
-        req.expression, alpha, cfg, n_trials=max(1, int(req.n_trials))
+        req.expression,
+        alpha,
+        cfg,
+        n_trials=max(1, int(req.n_trials)),
+        gics_map=gics_map,
+        universe_id=universe_id,
     )
     # Surface any non-fatal lint warnings (long windows, zero shifts) so the
     # frontend can show them next to the dashboard.
@@ -629,7 +744,10 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
         combined = weighted if combined is None else combined.add(weighted, fill_value=0.0)
 
     cfg = _make_config(req.settings)
-    response = _build_response("multi-blend", combined, cfg)
+    _, gics_map, universe_id = _resolve_universe(req.settings or {})
+    response = _build_response(
+        "multi-blend", combined, cfg, gics_map=gics_map, universe_id=universe_id
+    )
     response["expression"] = "multi-blend"
     response["settings"]["alphas"] = items
     return response
@@ -639,7 +757,10 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
 async def save_alpha(req: AlphaSaveRequest):
     alpha = _evaluate(req.expression)
     cfg = _make_config(req.settings)
-    response = _build_response(req.expression, alpha, cfg)
+    _, gics_map, universe_id = _resolve_universe(req.settings or {})
+    response = _build_response(
+        req.expression, alpha, cfg, gics_map=gics_map, universe_id=universe_id
+    )
     # The IS/OOS refactor split `metrics` into `is_metrics` + `oos_metrics`;
     # the persisted summary columns track the IS half (the always-present one).
     metrics = response["is_metrics"]
