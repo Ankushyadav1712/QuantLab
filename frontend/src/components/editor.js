@@ -51,6 +51,20 @@ const FIELD_NAMES = new Set([
   'consecutive_up', 'consecutive_down',
   // GICS labels — string-valued data fields used as the second arg to group_*
   'sector', 'industry_group', 'industry', 'sub_industry',
+  // Phase C: FRED macro (broadcast to every ticker per day)
+  'vix',
+  'treasury_3m_yield', 'treasury_2y_yield', 'treasury_10y_yield',
+  'term_spread_10y_2y', 'term_spread_10y_3m',
+  'high_yield_spread', 'baa_yield', 'aaa_yield', 'credit_spread_baa_aaa',
+  'dxy', 'wti_oil',
+  // Phase C: yfinance fundamentals (raw, lagged 1Q) + computed ratios
+  'revenue', 'gross_profit', 'operating_income', 'net_income', 'ebitda', 'eps',
+  'total_assets', 'total_debt', 'total_equity', 'cash',
+  'current_assets', 'current_liabilities',
+  'operating_cash_flow', 'capex', 'free_cash_flow',
+  'pe_ratio', 'pb_ratio', 'ps_ratio', 'ev_ebitda',
+  'roe', 'roa', 'debt_to_equity', 'current_ratio',
+  'gross_margin', 'operating_margin', 'fcf_yield',
 ]);
 
 const QUICK = [

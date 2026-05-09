@@ -36,6 +36,21 @@ DATA_FIELDS = {
     # of group_* operators.  The evaluator resolves them to (dates × tickers)
     # frames where every cell is the ticker's group label string.
     "sector", "industry_group", "industry", "sub_industry",
+    # ----- Phase C: FRED macro (broadcast to every ticker per day) -----
+    "vix",
+    "treasury_3m_yield", "treasury_2y_yield", "treasury_10y_yield",
+    "term_spread_10y_2y", "term_spread_10y_3m",
+    "high_yield_spread", "baa_yield", "aaa_yield", "credit_spread_baa_aaa",
+    "dxy", "wti_oil",
+    # ----- Phase C: yfinance fundamentals (raw, lagged 1Q) -----
+    "revenue", "gross_profit", "operating_income", "net_income", "ebitda", "eps",
+    "total_assets", "total_debt", "total_equity", "cash",
+    "current_assets", "current_liabilities",
+    "operating_cash_flow", "capex", "free_cash_flow",
+    # ----- Phase C: computed fundamentals ratios -----
+    "pe_ratio", "pb_ratio", "ps_ratio", "ev_ebitda",
+    "roe", "roa", "debt_to_equity", "current_ratio",
+    "gross_margin", "operating_margin", "fcf_yield",
 }
 
 # User-facing aliases that resolve to a canonical field name.  `range` is the

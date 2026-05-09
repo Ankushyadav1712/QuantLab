@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -32,6 +33,18 @@ from config import (
 )
 from data.factors import download_ff5_daily
 from data.fetcher import ALL_FIELDS, DataFetcher
+from data.fundamentals import (
+    ALL_FUNDAMENTAL_FIELDS,
+    LAG_QUARTERS,
+    download_fundamentals,
+)
+from data.macro import (
+    ALL_MACRO_FIELDS,
+    DERIVED_MACRO_BUILDERS,
+    FRED_SERIES,
+    broadcast_to_matrix as macro_broadcast,
+    download_macro,
+)
 from data.sp100_history import membership_summary
 from data.universes import (
     all_tickers as universe_all_tickers,
@@ -211,11 +224,57 @@ FIELDS: list[dict[str, str]] = [
     {"name": "body_to_range", "category": "price_structure", "description": "|close-open| / range; small body = indecision day"},
     {"name": "consecutive_up", "category": "price_structure", "description": "Consecutive up-day streak; resets on any down day"},
     {"name": "consecutive_down", "category": "price_structure", "description": "Consecutive down-day streak; resets on any up day"},
+    # ----- Phase C: FRED macro (broadcast to every ticker per day) -----
+    {"name": "vix", "category": "macro", "description": "CBOE VIX index — implied vol of S&P 500 options"},
+    {"name": "treasury_3m_yield", "category": "macro", "description": "3-month Treasury constant-maturity yield (%)"},
+    {"name": "treasury_2y_yield", "category": "macro", "description": "2-year Treasury constant-maturity yield (%)"},
+    {"name": "treasury_10y_yield", "category": "macro", "description": "10-year Treasury constant-maturity yield (%)"},
+    {"name": "term_spread_10y_2y", "category": "macro", "description": "10y minus 2y Treasury spread; recession indicator"},
+    {"name": "term_spread_10y_3m", "category": "macro", "description": "10y minus 3m Treasury spread; classic curve inversion gauge"},
+    {"name": "high_yield_spread", "category": "macro", "description": "ICE BofA US High Yield Index option-adjusted spread"},
+    {"name": "baa_yield", "category": "macro", "description": "Moody's seasoned Baa corporate bond yield (%)"},
+    {"name": "aaa_yield", "category": "macro", "description": "Moody's seasoned Aaa corporate bond yield (%)"},
+    {"name": "credit_spread_baa_aaa", "category": "macro", "description": "Baa minus Aaa corporate spread; credit-stress proxy"},
+    {"name": "dxy", "category": "macro", "description": "Broad trade-weighted USD index"},
+    {"name": "wti_oil", "category": "macro", "description": "WTI crude oil spot price (USD/bbl)"},
+    # ----- Phase C: yfinance fundamentals (lagged 1 quarter; non-PIT) -----
+    {"name": "revenue", "category": "fundamentals", "description": "Quarterly total revenue (lagged 1Q)"},
+    {"name": "gross_profit", "category": "fundamentals", "description": "Quarterly gross profit"},
+    {"name": "operating_income", "category": "fundamentals", "description": "Quarterly operating income"},
+    {"name": "net_income", "category": "fundamentals", "description": "Quarterly net income"},
+    {"name": "ebitda", "category": "fundamentals", "description": "Quarterly EBITDA"},
+    {"name": "eps", "category": "fundamentals", "description": "Diluted earnings per share (quarterly)"},
+    {"name": "total_assets", "category": "fundamentals", "description": "Balance sheet total assets"},
+    {"name": "total_debt", "category": "fundamentals", "description": "Balance sheet total debt"},
+    {"name": "total_equity", "category": "fundamentals", "description": "Balance sheet total stockholders equity (book value)"},
+    {"name": "cash", "category": "fundamentals", "description": "Cash and cash equivalents"},
+    {"name": "current_assets", "category": "fundamentals", "description": "Total current assets"},
+    {"name": "current_liabilities", "category": "fundamentals", "description": "Total current liabilities"},
+    {"name": "operating_cash_flow", "category": "fundamentals", "description": "Cash from operating activities"},
+    {"name": "capex", "category": "fundamentals", "description": "Capital expenditure (negative in yfinance)"},
+    {"name": "free_cash_flow", "category": "fundamentals", "description": "OCF + capex (or yfinance-supplied)"},
+    # Computed ratios (raw fundamentals × close)
+    {"name": "pe_ratio", "category": "fundamentals_ratio", "description": "Price-to-earnings: market_cap / net_income"},
+    {"name": "pb_ratio", "category": "fundamentals_ratio", "description": "Price-to-book: market_cap / total_equity"},
+    {"name": "ps_ratio", "category": "fundamentals_ratio", "description": "Price-to-sales: market_cap / revenue"},
+    {"name": "ev_ebitda", "category": "fundamentals_ratio", "description": "Enterprise value / EBITDA"},
+    {"name": "roe", "category": "fundamentals_ratio", "description": "Return on equity: net_income / total_equity"},
+    {"name": "roa", "category": "fundamentals_ratio", "description": "Return on assets: net_income / total_assets"},
+    {"name": "debt_to_equity", "category": "fundamentals_ratio", "description": "Total debt / total equity"},
+    {"name": "current_ratio", "category": "fundamentals_ratio", "description": "Current assets / current liabilities"},
+    {"name": "gross_margin", "category": "fundamentals_ratio", "description": "Gross profit / revenue"},
+    {"name": "operating_margin", "category": "fundamentals_ratio", "description": "Operating income / revenue"},
+    {"name": "fcf_yield", "category": "fundamentals_ratio", "description": "Free cash flow / market cap"},
 ]
 
 # Plain-name list for callers that only want field names.
 DATA_FIELDS: list[str] = [f["name"] for f in FIELDS]
-assert sorted(DATA_FIELDS) == sorted(ALL_FIELDS), "FIELDS and ALL_FIELDS must agree"
+# Sanity: every OHLCV-derived field from the fetcher must be documented in
+# FIELDS (macro and GICS fields live alongside but come from other sources).
+_ohlcv_documented = set(DATA_FIELDS) & set(ALL_FIELDS)
+assert _ohlcv_documented == set(ALL_FIELDS), (
+    f"FIELDS missing OHLCV docs for: {set(ALL_FIELDS) - _ohlcv_documented}"
+)
 
 
 # ---------- Lifespan: load data + init DB ----------
@@ -251,7 +310,7 @@ async def lifespan(_app: FastAPI):
     _state["fetcher"] = fetcher
     _state["spy_returns"] = spy_returns
     _state["ff5"] = ff5
-    _state["data"] = {field: fetcher.get_data_matrix(field) for field in DATA_FIELDS}
+    _state["data"] = {field: fetcher.get_data_matrix(field) for field in ALL_FIELDS}
     # GICS-as-DataField wiring: build (dates × tickers) string frames for each
     # GICS level so expressions can reference `sector`, `industry`, etc. and
     # feed them into group_* operators.  Uses the close matrix's index/columns
@@ -261,6 +320,42 @@ async def lifespan(_app: FastAPI):
         _state["gics_data"] = gics_data_frames(close_mat.index, list(close_mat.columns))
     else:
         _state["gics_data"] = {}
+
+    # Phase C — FRED macro fields broadcast to (dates × tickers).  Network
+    # failure is non-fatal; missing fields just don't appear in `_state["data"]`
+    # and any expression referencing them surfaces a clear "Unknown data field"
+    # error from the evaluator.
+    macro_present: list[str] = []
+    if close_mat is not None and not close_mat.empty:
+        macro_series = download_macro()
+        ticker_list = list(close_mat.columns)
+        for name, series in macro_series.items():
+            try:
+                _state["data"][name] = macro_broadcast(series, close_mat.index, ticker_list)
+                macro_present.append(name)
+            except Exception as exc:
+                warnings.warn(f"[macro:{name}] broadcast failed: {exc}")
+    _state["macro_present"] = macro_present
+
+    # Phase C — yfinance fundamentals.  Slow first-boot (~2 minutes for 95
+    # tickers, weekly cache thereafter).  Tickers that fail yfinance contribute
+    # NaN columns; the loader never raises.  Wrapped in try/except so a
+    # catastrophic yfinance schema break doesn't kill startup.
+    fundamentals_present: list[str] = []
+    if close_mat is not None and not close_mat.empty:
+        try:
+            fund_matrices = download_fundamentals(
+                tickers=list(close_mat.columns),
+                daily_index=close_mat.index,
+                close_matrix=close_mat,
+            )
+            for name, matrix in fund_matrices.items():
+                _state["data"][name] = matrix
+                fundamentals_present.append(name)
+        except Exception as exc:
+            warnings.warn(f"[fundamentals] load failed: {exc}; skipping")
+    _state["fundamentals_present"] = fundamentals_present
+    _state["fundamentals_lag_quarters"] = LAG_QUARTERS
     log.info(
         "lifespan: ready",
         extra={
@@ -420,8 +515,21 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
         # column set has expanded — the evaluator must see the new tickers.
         fetcher: DataFetcher = _state["fetcher"]
         failed = fetcher.ensure_tickers(tickers)
-        # Refresh the matrices snapshot the rest of the request reads from
-        _state["data"] = {field: fetcher.get_data_matrix(field) for field in DATA_FIELDS}
+        # Refresh the matrices snapshot the rest of the request reads from.
+        # Rebuild GICS frames + re-broadcast macro to the new (potentially
+        # wider) ticker set so the evaluator sees aligned shapes everywhere.
+        _state["data"] = {field: fetcher.get_data_matrix(field) for field in ALL_FIELDS}
+        close_mat = _state["data"].get("close")
+        if close_mat is not None and not close_mat.empty:
+            new_cols = list(close_mat.columns)
+            _state["gics_data"] = gics_data_frames(close_mat.index, new_cols)
+            for name in _state.get("macro_present", []):
+                # macro_broadcast wants a Series; pull it out of the existing
+                # matrix (any column is fine since they're all identical broadcasts)
+                existing = _state["data"].get(name)
+                if existing is not None and not existing.empty:
+                    series = existing.iloc[:, 0]
+                    _state["data"][name] = macro_broadcast(series, close_mat.index, new_cols)
         live = [t for t in tickers if t not in failed]
         if not live:
             raise HTTPException(
@@ -689,12 +797,32 @@ def _data_quality(
             "'Point-in-time universe' in settings to gate late additions "
             "(currently: TSLA pre-2020-12-21)."
         )
+
+    # Phase C disclosure: fundamentals are non-PIT.  Only surface this if the
+    # data was actually loaded — saves the user's eyes when they're using only
+    # OHLCV/macro fields.
+    fundamentals_present = _state.get("fundamentals_present", [])
+    fundamentals_block: dict[str, Any] = {
+        "enabled": bool(fundamentals_present),
+        "lag_quarters": _state.get("fundamentals_lag_quarters", 0),
+        "fields_loaded": len(fundamentals_present),
+    }
+    if fundamentals_present:
+        notes.append(
+            f"Fundamentals (P/E, ROE, revenue, …) are lagged "
+            f"{_state.get('fundamentals_lag_quarters', 1)} quarter(s) as a "
+            "point-in-time proxy: yfinance returns the *latest* filings "
+            "(including restatements), so without a lag, alphas using "
+            "fundamentals would silently consume future revisions. Real "
+            "PIT requires actual report-release dates from a paid feed."
+        )
     return {
         "survivorship_bias": True,
         "universe_kind": "current_snapshot",
         "expected_sharpe_inflation": 0.2,
         "universe": universe_block,
         "point_in_time": pit_block,
+        "fundamentals": fundamentals_block,
         "notes": notes,
     }
 
