@@ -20,6 +20,12 @@ _FUNCTION_NAME_REMAP = {
     "sign": "op_sign",
     "max": "op_max",
     "min": "op_min",
+    # Phase A arithmetic additions — Python builtins or pandas method names
+    # we don't want to shadow at module scope.
+    "exp": "op_exp",
+    "sqrt": "op_sqrt",
+    "mod": "op_mod",
+    "equal": "op_equal",
 }
 
 

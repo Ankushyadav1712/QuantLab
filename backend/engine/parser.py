@@ -19,6 +19,10 @@ DATA_FIELDS = {
     "true_range", "atr", "realized_vol", "skewness", "kurtosis",
     # Momentum & relative (4)
     "momentum_5", "momentum_20", "close_to_high_252", "high_low_ratio",
+    # GICS classification labels (4) — string-valued, used as the second arg
+    # of group_* operators.  The evaluator resolves them to (dates × tickers)
+    # frames where every cell is the ticker's group label string.
+    "sector", "industry_group", "industry", "sub_industry",
 }
 
 # User-facing aliases that resolve to a canonical field name.  `range` is the

@@ -797,6 +797,33 @@ def default_universe_id() -> str:
     return next(iter(_UNIVERSES))
 
 
+def gics_data_frames(
+    dates,
+    tickers: list[str],
+):
+    """Build (dates × tickers) string DataFrames for each GICS level.
+
+    Used by the evaluator so expressions can reference ``sector``,
+    ``industry_group``, etc. as data fields and feed them into the group_*
+    operators.  Each cell is the ticker's GICS label string (constant across
+    dates per ticker).  Tickers absent from the catalog get NaN, which the
+    group operators treat as "exclude from groupby".
+    """
+    import pandas as _pd  # local import keeps universes.py framework-free at top
+
+    gics = gics_for(tickers)
+    out: dict[str, _pd.DataFrame] = {}
+    for level in GICS_LEVELS:
+        per_ticker = [gics[t].get(level) for t in tickers]
+        # Broadcast the per-ticker label across all dates
+        out[level] = _pd.DataFrame(
+            [per_ticker] * len(dates),
+            index=dates,
+            columns=tickers,
+        )
+    return out
+
+
 def available_neutralizations(
     gics_map: dict[str, dict[str, str | None]],
     *,
