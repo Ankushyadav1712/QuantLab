@@ -179,6 +179,38 @@ FIELDS: list[dict[str, str]] = [
     {"name": "momentum_20", "category": "momentum_relative", "description": "20-day price momentum"},
     {"name": "close_to_high_252", "category": "momentum_relative", "description": "Ratio of close to 52-week high; distance from recent peak"},
     {"name": "high_low_ratio", "category": "momentum_relative", "description": "High over low; intraday volatility as a ratio"},
+    # ----- Phase B: extended momentum (8) -----
+    {"name": "momentum_3", "category": "momentum_relative", "description": "3-day price momentum"},
+    {"name": "momentum_10", "category": "momentum_relative", "description": "10-day price momentum"},
+    {"name": "momentum_60", "category": "momentum_relative", "description": "60-day (3-month) price momentum"},
+    {"name": "momentum_120", "category": "momentum_relative", "description": "120-day (6-month) price momentum"},
+    {"name": "momentum_252", "category": "momentum_relative", "description": "252-day (1-year) price momentum"},
+    {"name": "reversal_5", "category": "momentum_relative", "description": "Negative of momentum_5; short-horizon mean-reversion signal"},
+    {"name": "reversal_20", "category": "momentum_relative", "description": "Negative of momentum_20; mid-horizon mean-reversion signal"},
+    {"name": "momentum_z_60", "category": "momentum_relative", "description": "60-day momentum / 60-day return-vol; risk-adjusted momentum"},
+    # ----- Phase B: extended volatility (6) -----
+    {"name": "realized_vol_5", "category": "volatility_risk", "description": "5-day rolling return standard deviation"},
+    {"name": "realized_vol_60", "category": "volatility_risk", "description": "60-day rolling return standard deviation"},
+    {"name": "realized_vol_120", "category": "volatility_risk", "description": "120-day rolling return standard deviation"},
+    {"name": "vol_of_vol_20", "category": "volatility_risk", "description": "20-day stdev of realized_vol_20; vol-regime change proxy"},
+    {"name": "parkinson_vol", "category": "volatility_risk", "description": "Range-based vol estimator using high-low; more efficient than close-to-close"},
+    {"name": "garman_klass_vol", "category": "volatility_risk", "description": "OHLC-based vol estimator; combines intraday extremes and gap"},
+    # ----- Phase B: microstructure (8) -----
+    {"name": "roll_spread", "category": "microstructure", "description": "Roll's effective spread (1984): 2·sqrt(-cov(Δp_t, Δp_{t-1}))"},
+    {"name": "kyle_lambda", "category": "microstructure", "description": "Kyle's lambda price-impact proxy: |returns| / sqrt(dollar_volume)"},
+    {"name": "vpin_proxy", "category": "microstructure", "description": "Order-flow toxicity: |signed_volume| / total_volume, rolling 20"},
+    {"name": "up_volume_ratio", "category": "microstructure", "description": "Fraction of 20-day volume traded on green days"},
+    {"name": "down_volume_ratio", "category": "microstructure", "description": "Fraction of 20-day volume traded on red days"},
+    {"name": "turnover_ratio", "category": "microstructure", "description": "Today's volume vs. 60-day baseline; long-horizon volume_ratio"},
+    {"name": "dollar_amihud", "category": "microstructure", "description": "Smoothed |returns| / dollar_volume; per-dollar-volume price impact"},
+    {"name": "corwin_schultz", "category": "microstructure", "description": "Corwin-Schultz (2012) high-low spread estimator"},
+    # ----- Phase B: extended range / candle structure (6) -----
+    {"name": "atr_5", "category": "volatility_risk", "description": "5-day average true range; short-window vol via TR"},
+    {"name": "atr_60", "category": "volatility_risk", "description": "60-day average true range; long-window vol via TR"},
+    {"name": "range_z_20", "category": "price_structure", "description": "Z-score of today's range vs its 20-day distribution"},
+    {"name": "body_to_range", "category": "price_structure", "description": "|close-open| / range; small body = indecision day"},
+    {"name": "consecutive_up", "category": "price_structure", "description": "Consecutive up-day streak; resets on any down day"},
+    {"name": "consecutive_down", "category": "price_structure", "description": "Consecutive down-day streak; resets on any up day"},
 ]
 
 # Plain-name list for callers that only want field names.
