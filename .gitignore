@@ -158,3 +158,10 @@ Desktop.ini
 *.db
 tmp/
 temp/
+
+# ---------- Data caches ----------
+# yfinance OHLCV + derived field parquets — regenerated on first request.
+# Tracking them produces 80+ "modified" entries every 24h cache refresh and
+# bloats the repo with binary churn. Use a persistent disk / Docker volume
+# in production to avoid the cold-start re-download penalty.
+backend/data/cache/
