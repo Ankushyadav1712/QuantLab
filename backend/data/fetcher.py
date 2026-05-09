@@ -18,7 +18,7 @@ BASE_FIELDS: tuple[str, ...] = (
     "open", "high", "low", "close", "volume", "returns", "vwap",
 )
 
-# 25 fields computed from base matrices, cached at {field}.parquet
+# 53 fields computed from base matrices, cached at {field}.parquet
 DERIVED_FIELDS: tuple[str, ...] = (
     # price structure
     "median_price", "weighted_close", "range_", "body",
@@ -32,9 +32,43 @@ DERIVED_FIELDS: tuple[str, ...] = (
     "true_range", "atr", "realized_vol", "skewness", "kurtosis",
     # momentum & relative
     "momentum_5", "momentum_20", "close_to_high_252", "high_low_ratio",
+    # ----- Phase B: extended momentum (8) -----
+    "momentum_3", "momentum_10", "momentum_60", "momentum_120", "momentum_252",
+    "reversal_5", "reversal_20", "momentum_z_60",
+    # ----- Phase B: extended volatility (6) -----
+    "realized_vol_5", "realized_vol_60", "realized_vol_120",
+    "vol_of_vol_20", "parkinson_vol", "garman_klass_vol",
+    # ----- Phase B: microstructure (8) -----
+    "roll_spread", "kyle_lambda", "vpin_proxy",
+    "up_volume_ratio", "down_volume_ratio", "turnover_ratio",
+    "dollar_amihud", "corwin_schultz",
+    # ----- Phase B: extended range / candle structure (6) -----
+    "atr_5", "atr_60", "range_z_20", "body_to_range",
+    "consecutive_up", "consecutive_down",
 )
 
 ALL_FIELDS: tuple[str, ...] = BASE_FIELDS + DERIVED_FIELDS  # 32 total
+
+
+def _streak_count(mask_df: pd.DataFrame) -> pd.DataFrame:
+    """Per column, count consecutive True values; reset to 0 on any False.
+
+    Vectorized trick (works column-wise without a Python loop):
+      1. cumsum the integer mask
+      2. wherever the mask is 0, record that cumsum value as the most recent
+         "reset point" (forward-filled)
+      3. subtract reset from cumsum → run length
+
+    Example for a single column:
+      mask    = [1, 1, 0, 1, 1, 1, 0]
+      cum     = [1, 2, 2, 3, 4, 5, 5]
+      reset   = [0, 0, 2, 2, 2, 2, 5]
+      streak  = [1, 2, 0, 1, 2, 3, 0]
+    """
+    mask_int = mask_df.astype(int)
+    cum = mask_int.cumsum()
+    reset = cum.where(mask_int == 0).ffill().fillna(0)
+    return (cum - reset).astype(float)
 
 
 class DataFetcher:
@@ -207,6 +241,120 @@ class DataFetcher:
         self._matrix["momentum_20"] = c / c.shift(20) - 1.0
         self._matrix["close_to_high_252"] = c / c.rolling(252).max()
         self._matrix["high_low_ratio"] = h / l
+
+        # ----- Phase B: extended momentum (8) -----
+        # Different lookback windows + risk-adjusted variants.  Researchers
+        # routinely sweep momentum windows; precomputing the common ones means
+        # alphas like `rank(momentum_60)` work without rolling-op composition.
+        self._matrix["momentum_3"] = c / c.shift(3) - 1.0
+        self._matrix["momentum_10"] = c / c.shift(10) - 1.0
+        self._matrix["momentum_60"] = c / c.shift(60) - 1.0
+        self._matrix["momentum_120"] = c / c.shift(120) - 1.0
+        self._matrix["momentum_252"] = c / c.shift(252) - 1.0
+        # Reversal signals are just the negative of momentum; precomputed for
+        # convenience and so quants can write `rank(reversal_5)` directly.
+        self._matrix["reversal_5"] = -self._matrix["momentum_5"]
+        self._matrix["reversal_20"] = -self._matrix["momentum_20"]
+        # Risk-adjusted momentum: 60-day return divided by 60-day return-vol.
+        # Closer to a per-name Sharpe; less dominated by high-vol stocks.
+        rv60 = r.rolling(60).std()
+        self._matrix["momentum_z_60"] = self._matrix["momentum_60"] / rv60.replace(0, np.nan)
+
+        # ----- Phase B: extended volatility (6) -----
+        self._matrix["realized_vol_5"] = r.rolling(5).std()
+        self._matrix["realized_vol_60"] = rv60
+        self._matrix["realized_vol_120"] = r.rolling(120).std()
+        # Vol-of-vol: how much realized_vol_20 itself moves over a month.
+        # Surrogates for "vol regime change" alphas.
+        self._matrix["vol_of_vol_20"] = self._matrix["realized_vol"].rolling(20).std()
+        # Parkinson estimator: high-low range based vol.  More efficient than
+        # close-to-close because it uses intraday extremes.
+        # σ_P^2 = (1/(4·ln(2))) · (ln(H/L))^2  →  rolling-mean for stability.
+        ln_hl_sq = (np.log(h / l)) ** 2
+        self._matrix["parkinson_vol"] = np.sqrt(
+            ln_hl_sq.rolling(20).mean() / (4.0 * np.log(2.0))
+        )
+        # Garman-Klass: combines OHLC for the most efficient single-day estimate.
+        # σ_GK^2 = 0.5·(ln(H/L))^2 - (2·ln(2) - 1)·(ln(C/O))^2
+        ln_co_sq = (np.log(c / o)) ** 2
+        gk_var = 0.5 * ln_hl_sq - (2.0 * np.log(2.0) - 1.0) * ln_co_sq
+        # Negative cells (numerically possible on flat days) → clip to 0
+        self._matrix["garman_klass_vol"] = np.sqrt(gk_var.clip(lower=0).rolling(20).mean())
+
+        # ----- Phase B: microstructure (8) -----
+        # Roll's effective spread (1984): 2·sqrt(-cov(Δp_t, Δp_{t-1})).
+        # Negative covariance is the signature of bid-ask bounce.  Cells with
+        # positive cov produce NaN (formula undefined → not enough microstructure noise).
+        dp = c.diff()
+        cov_lag = dp.rolling(20).cov(dp.shift(1))
+        # Take 2·sqrt(-cov) only where cov is negative
+        self._matrix["roll_spread"] = 2.0 * np.sqrt((-cov_lag).clip(lower=0)).where(cov_lag < 0)
+        # Kyle's lambda proxy: |returns| / sqrt(dollar_volume) — price impact per
+        # unit of trade.  Higher = less liquid = more impact.
+        self._matrix["kyle_lambda"] = (
+            r.abs() / np.sqrt(dv.replace(0, np.nan))
+        ).rolling(20).mean()
+        # VPIN proxy: |signed_volume| / volume — net order imbalance fraction.
+        # Higher = more directional flow (toxic for market makers).
+        self._matrix["vpin_proxy"] = (
+            (v * np.sign(r)).abs().rolling(20).sum()
+            / v.rolling(20).sum().replace(0, np.nan)
+        )
+        # Up/down volume ratios — fraction of 20d volume traded on green days.
+        up_vol = v.where(r > 0, 0.0)
+        down_vol = v.where(r < 0, 0.0)
+        total_vol_20 = v.rolling(20).sum().replace(0, np.nan)
+        self._matrix["up_volume_ratio"] = up_vol.rolling(20).sum() / total_vol_20
+        self._matrix["down_volume_ratio"] = down_vol.rolling(20).sum() / total_vol_20
+        # Turnover ratio: today's volume vs the 60-day baseline.  Different
+        # window from `volume_ratio` (which uses adv20) → captures longer-term shifts.
+        adv60 = v.rolling(60).mean()
+        self._matrix["turnover_ratio"] = v / adv60.replace(0, np.nan)
+        # Dollar-Amihud: per-dollar-volume price impact, rolling 20.  Like the
+        # raw `amihud` field but smoothed.
+        self._matrix["dollar_amihud"] = (r.abs() / dv.replace(0, np.nan)).rolling(20).mean()
+        # Corwin-Schultz (2012) high-low spread estimator.
+        # β = (ln(H_t/L_t))^2 + (ln(H_{t+1}/L_{t+1}))^2  (sum of two consecutive days)
+        # γ = (ln(max(H_t, H_{t+1}) / min(L_t, L_{t+1})))^2  (2-day high-low)
+        # α = (sqrt(2β) - sqrt(β)) / (3 - 2sqrt(2)) - sqrt(γ / (3 - 2sqrt(2)))
+        # S = 2(e^α - 1) / (1 + e^α)
+        # Negative spread estimates are clipped to NaN per the original paper.
+        ln_hl_today = ln_hl_sq  # already (ln H/L)^2 today
+        ln_hl_yest = ln_hl_sq.shift(-1)  # next day's (ln H/L)^2
+        beta = ln_hl_today + ln_hl_yest
+        h_2d = pd.concat([h, h.shift(-1)]).groupby(level=0).max()
+        l_2d = pd.concat([l, l.shift(-1)]).groupby(level=0).min()
+        gamma = (np.log(h_2d / l_2d)) ** 2
+        denom = 3.0 - 2.0 * np.sqrt(2.0)
+        # sqrt(2β) - sqrt(β) on its own is well-defined for β >= 0
+        beta_clipped = beta.clip(lower=0)
+        gamma_clipped = gamma.clip(lower=0)
+        alpha = (np.sqrt(2.0 * beta_clipped) - np.sqrt(beta_clipped)) / denom \
+            - np.sqrt(gamma_clipped / denom)
+        cs_spread = 2.0 * (np.exp(alpha) - 1.0) / (1.0 + np.exp(alpha))
+        # Per the paper, negative spread estimates indicate the formula breaks
+        # down on that day — drop them rather than report negative spreads.
+        self._matrix["corwin_schultz"] = cs_spread.where(cs_spread > 0)
+
+        # ----- Phase B: extended range / candle structure (6) -----
+        self._matrix["atr_5"] = true_range.rolling(5).mean()
+        self._matrix["atr_60"] = true_range.rolling(60).mean()
+        # z-score of today's range vs its 20-day distribution
+        rng_mean_20 = self._matrix["range_"].rolling(20).mean()
+        rng_std_20 = self._matrix["range_"].rolling(20).std()
+        self._matrix["range_z_20"] = (
+            self._matrix["range_"] - rng_mean_20
+        ) / rng_std_20.replace(0, np.nan)
+        # Body as a fraction of the day's range — small body = indecision day
+        self._matrix["body_to_range"] = self._matrix["body"] / self._matrix["range_"].replace(0, np.nan)
+        # Consecutive up/down day counters — reset on any opposite move.  Useful
+        # for "exhaustion" alphas after long streaks.  Vectorized streak count:
+        # cumsum the mask, subtract the cumsum value at the most recent reset
+        # (cell where the mask is 0).  Works column-wise on DataFrames.
+        up_day = (r > 0).astype(int)
+        down_day = (r < 0).astype(int)
+        self._matrix["consecutive_up"] = _streak_count(up_day)
+        self._matrix["consecutive_down"] = _streak_count(down_day)
 
         self._save_derived_caches()
 

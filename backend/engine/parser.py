@@ -19,6 +19,19 @@ DATA_FIELDS = {
     "true_range", "atr", "realized_vol", "skewness", "kurtosis",
     # Momentum & relative (4)
     "momentum_5", "momentum_20", "close_to_high_252", "high_low_ratio",
+    # ----- Phase B: extended momentum (8) -----
+    "momentum_3", "momentum_10", "momentum_60", "momentum_120", "momentum_252",
+    "reversal_5", "reversal_20", "momentum_z_60",
+    # ----- Phase B: extended volatility (6) -----
+    "realized_vol_5", "realized_vol_60", "realized_vol_120",
+    "vol_of_vol_20", "parkinson_vol", "garman_klass_vol",
+    # ----- Phase B: microstructure (8) -----
+    "roll_spread", "kyle_lambda", "vpin_proxy",
+    "up_volume_ratio", "down_volume_ratio", "turnover_ratio",
+    "dollar_amihud", "corwin_schultz",
+    # ----- Phase B: extended range / candle structure (6) -----
+    "atr_5", "atr_60", "range_z_20", "body_to_range",
+    "consecutive_up", "consecutive_down",
     # GICS classification labels (4) — string-valued, used as the second arg
     # of group_* operators.  The evaluator resolves them to (dates × tickers)
     # frames where every cell is the ticker's group label string.
