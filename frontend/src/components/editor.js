@@ -4,10 +4,25 @@
 import { api } from '../api.js';
 
 const OPERATOR_NAMES = new Set([
+  // Time-series (axis=0, per ticker)
   'ts_mean', 'ts_std', 'ts_min', 'ts_max', 'ts_sum', 'ts_rank',
+  'ts_median', 'ts_skewness', 'ts_kurtosis', 'ts_zscore', 'ts_quantile',
+  'ts_arg_max', 'ts_arg_min', 'ts_product', 'ts_returns', 'ts_decay_exp',
+  'ts_partial_corr', 'ts_regression', 'ts_min_max_diff',
   'delta', 'delay', 'decay_linear', 'ts_corr', 'ts_cov',
+  'days_from_last_change', 'hump',
+  // Cross-sectional (axis=1, per date)
   'rank', 'zscore', 'demean', 'scale', 'normalize',
-  'abs', 'log', 'sign', 'power', 'max', 'min', 'if_else',
+  'winsorize', 'quantile', 'vector_neut', 'regression_neut', 'bucket',
+  'tail', 'kth_element', 'harmonic_mean', 'geometric_mean', 'step',
+  // Group operators (need a group label)
+  'group_rank', 'group_zscore', 'group_neutralize', 'group_mean', 'group_sum',
+  'group_count', 'group_max', 'group_min', 'group_normalize', 'group_scale',
+  // Arithmetic / element-wise
+  'abs', 'log', 'exp', 'sqrt', 'mod', 'sign', 'power', 'signed_power',
+  'sigmoid', 'clip', 'max', 'min', 'replace', 'isnan', 'equal',
+  // Conditional / state
+  'if_else', 'where', 'when', 'mask', 'trade_when', 'keep', 'pasteurize',
 ]);
 // Stays in sync with backend FIELDS in main.py (kept hardcoded so syntax
 // highlighting works on first paint without an extra fetch). 'range' is the
@@ -21,6 +36,8 @@ const FIELD_NAMES = new Set([
   'dollar_volume', 'adv20', 'volume_ratio', 'amihud',
   'true_range', 'atr', 'realized_vol', 'skewness', 'kurtosis',
   'momentum_5', 'momentum_20', 'close_to_high_252', 'high_low_ratio',
+  // GICS labels — string-valued data fields used as the second arg to group_*
+  'sector', 'industry_group', 'industry', 'sub_industry',
 ]);
 
 const QUICK = [
