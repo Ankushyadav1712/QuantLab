@@ -38,6 +38,7 @@ from data.universes import (
     available_neutralizations,
     default_universe_id,
     get_universe,
+    gics_data_frames,
     gics_for,
     list_universes,
 )
@@ -57,29 +58,84 @@ from models.schemas import (
 
 
 OPERATORS = [
-    {"name": "ts_mean", "args": "(x, d)", "description": "Rolling mean of x over d periods"},
-    {"name": "ts_std", "args": "(x, d)", "description": "Rolling stdev of x over d periods"},
-    {"name": "ts_min", "args": "(x, d)", "description": "Rolling min over d periods"},
-    {"name": "ts_max", "args": "(x, d)", "description": "Rolling max over d periods"},
-    {"name": "ts_sum", "args": "(x, d)", "description": "Rolling sum over d periods"},
-    {"name": "ts_rank", "args": "(x, d)", "description": "Rolling percentile rank in [0,1] over d periods"},
-    {"name": "delta", "args": "(x, d)", "description": "x - x.shift(d)"},
-    {"name": "delay", "args": "(x, d)", "description": "x.shift(d)"},
-    {"name": "decay_linear", "args": "(x, d)", "description": "Linearly weighted MA over d periods"},
-    {"name": "ts_corr", "args": "(x, y, d)", "description": "Rolling Pearson correlation over d periods"},
-    {"name": "ts_cov", "args": "(x, y, d)", "description": "Rolling covariance over d periods"},
-    {"name": "rank", "args": "(x)", "description": "Cross-sectional percentile rank in [0,1] per date"},
-    {"name": "zscore", "args": "(x)", "description": "Cross-sectional z-score per date"},
-    {"name": "demean", "args": "(x)", "description": "Subtract cross-sectional mean per date"},
-    {"name": "scale", "args": "(x)", "description": "Scale so |sum|=1 per date"},
-    {"name": "normalize", "args": "(x)", "description": "Demean then scale to unit |sum|"},
-    {"name": "abs", "args": "(x)", "description": "Element-wise absolute value"},
-    {"name": "log", "args": "(x)", "description": "Element-wise natural log (NaN for x<=0)"},
-    {"name": "sign", "args": "(x)", "description": "Element-wise sign (-1, 0, +1)"},
-    {"name": "power", "args": "(x, n)", "description": "x ** n element-wise"},
-    {"name": "max", "args": "(x, y)", "description": "Element-wise max"},
-    {"name": "min", "args": "(x, y)", "description": "Element-wise min"},
-    {"name": "if_else", "args": "(cond, x, y)", "description": "Element-wise conditional"},
+    # ----- Time-series (per ticker, axis=0) -----
+    {"name": "ts_mean", "args": "(x, d)", "category": "time_series", "description": "Rolling mean of x over d periods"},
+    {"name": "ts_std", "args": "(x, d)", "category": "time_series", "description": "Rolling stdev of x over d periods"},
+    {"name": "ts_min", "args": "(x, d)", "category": "time_series", "description": "Rolling min over d periods"},
+    {"name": "ts_max", "args": "(x, d)", "category": "time_series", "description": "Rolling max over d periods"},
+    {"name": "ts_sum", "args": "(x, d)", "category": "time_series", "description": "Rolling sum over d periods"},
+    {"name": "ts_rank", "args": "(x, d)", "category": "time_series", "description": "Rolling percentile rank in [0,1] over d periods"},
+    {"name": "ts_median", "args": "(x, d)", "category": "time_series", "description": "Rolling median"},
+    {"name": "ts_skewness", "args": "(x, d)", "category": "time_series", "description": "Rolling skewness"},
+    {"name": "ts_kurtosis", "args": "(x, d)", "category": "time_series", "description": "Rolling excess kurtosis"},
+    {"name": "ts_zscore", "args": "(x, d)", "category": "time_series", "description": "(x - rolling_mean) / rolling_std"},
+    {"name": "ts_quantile", "args": "(x, d, q=0.5)", "category": "time_series", "description": "Rolling q-th quantile"},
+    {"name": "ts_arg_max", "args": "(x, d)", "category": "time_series", "description": "Days-ago index of rolling max (0 = today)"},
+    {"name": "ts_arg_min", "args": "(x, d)", "category": "time_series", "description": "Days-ago index of rolling min (0 = today)"},
+    {"name": "ts_product", "args": "(x, d)", "category": "time_series", "description": "Rolling product over d periods"},
+    {"name": "ts_returns", "args": "(x, d)", "category": "time_series", "description": "Multi-period simple return: x / x.shift(d) - 1"},
+    {"name": "ts_decay_exp", "args": "(x, d, factor=0.5)", "category": "time_series", "description": "Exponentially-weighted MA over d periods"},
+    {"name": "ts_partial_corr", "args": "(x, y, z, d)", "category": "time_series", "description": "Rolling partial correlation of x,y controlling for z"},
+    {"name": "ts_regression", "args": "(y, x, d)", "category": "time_series", "description": "Rolling OLS slope: cov(x,y) / var(x)"},
+    {"name": "ts_min_max_diff", "args": "(x, d)", "category": "time_series", "description": "Rolling (max - min); volatility proxy"},
+    {"name": "delta", "args": "(x, d)", "category": "time_series", "description": "x - x.shift(d)"},
+    {"name": "delay", "args": "(x, d)", "category": "time_series", "description": "x.shift(d)"},
+    {"name": "decay_linear", "args": "(x, d)", "category": "time_series", "description": "Linearly weighted MA over d periods"},
+    {"name": "ts_corr", "args": "(x, y, d)", "category": "time_series", "description": "Rolling Pearson correlation over d periods"},
+    {"name": "ts_cov", "args": "(x, y, d)", "category": "time_series", "description": "Rolling covariance over d periods"},
+    {"name": "days_from_last_change", "args": "(x)", "category": "time_series", "description": "Days since the value last changed (per ticker)"},
+    {"name": "hump", "args": "(x, threshold=0.01)", "category": "time_series", "description": "Smoothing: only update when |x - prev| > threshold"},
+    # ----- Cross-sectional (per date, axis=1) -----
+    {"name": "rank", "args": "(x)", "category": "cross_sectional", "description": "Cross-sectional percentile rank in [0,1] per date"},
+    {"name": "zscore", "args": "(x)", "category": "cross_sectional", "description": "Cross-sectional z-score per date"},
+    {"name": "demean", "args": "(x)", "category": "cross_sectional", "description": "Subtract cross-sectional mean per date"},
+    {"name": "scale", "args": "(x)", "category": "cross_sectional", "description": "Scale so |sum|=1 per date"},
+    {"name": "normalize", "args": "(x)", "category": "cross_sectional", "description": "Demean then scale to unit |sum|"},
+    {"name": "winsorize", "args": "(x, std=4)", "category": "cross_sectional", "description": "Clip each row at ±std·sigma around the row mean"},
+    {"name": "quantile", "args": "(x, q=0.5)", "category": "cross_sectional", "description": "Per-row q-th quantile broadcast across columns"},
+    {"name": "vector_neut", "args": "(x, y)", "category": "cross_sectional", "description": "Project x orthogonal to y (per row)"},
+    {"name": "regression_neut", "args": "(x, y)", "category": "cross_sectional", "description": "Cross-sectional OLS residual of x on y"},
+    {"name": "bucket", "args": "(x, n=5)", "category": "cross_sectional", "description": "Discretize each row into n equal-frequency buckets [0..n-1]"},
+    {"name": "tail", "args": "(x, lower, upper, replace)", "category": "cross_sectional", "description": "Replace cells outside [lower, upper] with `replace`"},
+    {"name": "kth_element", "args": "(x, k)", "category": "cross_sectional", "description": "Per-row k-th smallest (k=-1 for max)"},
+    {"name": "harmonic_mean", "args": "(x)", "category": "cross_sectional", "description": "Per-row harmonic mean broadcast across columns"},
+    {"name": "geometric_mean", "args": "(x)", "category": "cross_sectional", "description": "Per-row geometric mean broadcast across columns"},
+    {"name": "step", "args": "(x)", "category": "cross_sectional", "description": "Per-row linear ramp from -1 to +1 by rank"},
+    # ----- Group operators (require a group label like `sector`) -----
+    {"name": "group_rank", "args": "(x, group)", "category": "group", "description": "Per row, percentile-rank x within each group"},
+    {"name": "group_zscore", "args": "(x, group)", "category": "group", "description": "Per row, z-score within each group"},
+    {"name": "group_neutralize", "args": "(x, group)", "category": "group", "description": "Subtract the group mean from each member"},
+    {"name": "group_mean", "args": "(x, group)", "category": "group", "description": "Broadcast group mean to each member"},
+    {"name": "group_sum", "args": "(x, group)", "category": "group", "description": "Broadcast group sum to each member"},
+    {"name": "group_count", "args": "(x, group)", "category": "group", "description": "Broadcast group count to each member"},
+    {"name": "group_max", "args": "(x, group)", "category": "group", "description": "Broadcast group max to each member"},
+    {"name": "group_min", "args": "(x, group)", "category": "group", "description": "Broadcast group min to each member"},
+    {"name": "group_normalize", "args": "(x, group)", "category": "group", "description": "Demean within group, scale to |sum|=1 per group"},
+    {"name": "group_scale", "args": "(x, group)", "category": "group", "description": "Scale so |sum|=1 within each group"},
+    # ----- Arithmetic / element-wise -----
+    {"name": "abs", "args": "(x)", "category": "arithmetic", "description": "Element-wise absolute value"},
+    {"name": "log", "args": "(x)", "category": "arithmetic", "description": "Element-wise natural log (NaN for x<=0)"},
+    {"name": "exp", "args": "(x)", "category": "arithmetic", "description": "Element-wise e^x"},
+    {"name": "sqrt", "args": "(x)", "category": "arithmetic", "description": "Element-wise sqrt (NaN for x<0)"},
+    {"name": "mod", "args": "(x, y)", "category": "arithmetic", "description": "x mod y element-wise (NaN for y=0)"},
+    {"name": "sign", "args": "(x)", "category": "arithmetic", "description": "Element-wise sign (-1, 0, +1)"},
+    {"name": "power", "args": "(x, n)", "category": "arithmetic", "description": "x ** n element-wise"},
+    {"name": "signed_power", "args": "(x, n)", "category": "arithmetic", "description": "sign(x) * |x|^n; preserves sign"},
+    {"name": "sigmoid", "args": "(x)", "category": "arithmetic", "description": "Logistic sigmoid 1/(1+e^-x)"},
+    {"name": "clip", "args": "(x, lo, hi)", "category": "arithmetic", "description": "Clamp each cell to [lo, hi]"},
+    {"name": "max", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise max"},
+    {"name": "min", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise min"},
+    {"name": "replace", "args": "(x, old, new)", "category": "arithmetic", "description": "Replace cells equal to `old` with `new`"},
+    {"name": "isnan", "args": "(x)", "category": "arithmetic", "description": "1.0 where cell is NaN, else 0.0"},
+    {"name": "equal", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise equality indicator (0/1)"},
+    # ----- Conditional / state -----
+    {"name": "if_else", "args": "(cond, x, y)", "category": "conditional", "description": "Element-wise conditional"},
+    {"name": "where", "args": "(cond, x, y)", "category": "conditional", "description": "Alias for if_else with truthy cond"},
+    {"name": "when", "args": "(cond, x)", "category": "conditional", "description": "x where cond is True, else NaN (no carry)"},
+    {"name": "mask", "args": "(x, cond)", "category": "conditional", "description": "Drop cells to NaN where cond is True (inverse of when)"},
+    {"name": "trade_when", "args": "(cond, x, exit_cond=None)", "category": "conditional", "description": "Take x when cond, carry forward; reset on exit_cond"},
+    {"name": "keep", "args": "(x, n)", "category": "conditional", "description": "Per row, keep top-n entries by |x|; zero rest"},
+    {"name": "pasteurize", "args": "(x)", "category": "conditional", "description": "Replace ±inf and NaN with 0"},
 ]
 
 # Rich field metadata: every entry is {name, category, description}.  Returned
@@ -164,6 +220,15 @@ async def lifespan(_app: FastAPI):
     _state["spy_returns"] = spy_returns
     _state["ff5"] = ff5
     _state["data"] = {field: fetcher.get_data_matrix(field) for field in DATA_FIELDS}
+    # GICS-as-DataField wiring: build (dates × tickers) string frames for each
+    # GICS level so expressions can reference `sector`, `industry`, etc. and
+    # feed them into group_* operators.  Uses the close matrix's index/columns
+    # so shapes always align with whatever the user is computing on.
+    close_mat = _state["data"].get("close")
+    if close_mat is not None and not close_mat.empty:
+        _state["gics_data"] = gics_data_frames(close_mat.index, list(close_mat.columns))
+    else:
+        _state["gics_data"] = {}
     log.info(
         "lifespan: ready",
         extra={
@@ -396,8 +461,12 @@ def _config_to_dict(cfg: SimulationConfig) -> dict[str, Any]:
 
 
 def _evaluate(expression: str) -> pd.DataFrame:
+    # Numeric data fields + GICS string frames live in the same dict so
+    # group_* operators can reference `sector`/`industry`/etc. like any other
+    # data field.  The dict is read-only inside the evaluator.
+    eval_data = {**_state["data"], **_state.get("gics_data", {})}
     try:
-        evaluator = AlphaEvaluator(_state["data"])
+        evaluator = AlphaEvaluator(eval_data)
         result = evaluator.evaluate(expression)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Expression error: {e}")
