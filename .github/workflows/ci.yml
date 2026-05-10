@@ -60,7 +60,7 @@ jobs:
       # invalidated automatically when config.py or fetcher.py changes.
       - name: Restore data cache
         id: cache-data
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: backend/data/cache
           key: data-cache-${{ hashFiles('backend/config.py', 'backend/data/fetcher.py') }}-v1
