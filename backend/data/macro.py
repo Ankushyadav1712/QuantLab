@@ -27,7 +27,6 @@ from pathlib import Path
 import httpx
 import numpy as np
 import pandas as pd
-
 from config import CACHE_DIR
 
 CACHE_TTL_SECONDS = 24 * 60 * 60

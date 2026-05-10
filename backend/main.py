@@ -1,26 +1,17 @@
 from __future__ import annotations
 
+import hmac
 import json
+import logging
 import math
+import os
 import warnings
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-import hmac
-import logging
-import os
-
 import numpy as np
 import pandas as pd
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
-
 from analytics.factor_decomp import FactorDecomposition
 from analytics.performance import PerformanceAnalytics, _safe_float, _safe_list
 from config import (
@@ -31,24 +22,24 @@ from config import (
     ENVIRONMENT,
     SECTOR_MAP,
 )
+from data.example_alphas import get_example, list_examples
 from data.factors import download_ff5_daily
 from data.fetcher import ALL_FIELDS, DataFetcher
-from data.example_alphas import get_example, list_examples
 from data.fundamentals import (
-    ALL_FUNDAMENTAL_FIELDS,
     LAG_QUARTERS,
     download_fundamentals,
 )
 from data.macro import (
-    ALL_MACRO_FIELDS,
-    DERIVED_MACRO_BUILDERS,
-    FRED_SERIES,
     broadcast_to_matrix as macro_broadcast,
+)
+from data.macro import (
     download_macro,
 )
 from data.sp100_history import membership_summary
 from data.universes import (
     all_tickers as universe_all_tickers,
+)
+from data.universes import (
     available_neutralizations,
     default_universe_id,
     get_universe,
@@ -63,6 +54,9 @@ from engine.evaluator import AlphaEvaluator
 from engine.lint import lint_ast
 from engine.parser import Parser
 from engine.sweep import combo_for_index, expand_sweeps
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from models.schemas import (
     AlphaSaveRequest,
     CompareRequest,
@@ -72,92 +66,460 @@ from models.schemas import (
     SweepRequest,
     ValidateRequest,
 )
-
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 OPERATORS = [
     # ----- Time-series (per ticker, axis=0) -----
-    {"name": "ts_mean", "args": "(x, d)", "category": "time_series", "description": "Rolling mean of x over d periods"},
-    {"name": "ts_std", "args": "(x, d)", "category": "time_series", "description": "Rolling stdev of x over d periods"},
-    {"name": "ts_min", "args": "(x, d)", "category": "time_series", "description": "Rolling min over d periods"},
-    {"name": "ts_max", "args": "(x, d)", "category": "time_series", "description": "Rolling max over d periods"},
-    {"name": "ts_sum", "args": "(x, d)", "category": "time_series", "description": "Rolling sum over d periods"},
-    {"name": "ts_rank", "args": "(x, d)", "category": "time_series", "description": "Rolling percentile rank in [0,1] over d periods"},
-    {"name": "ts_median", "args": "(x, d)", "category": "time_series", "description": "Rolling median"},
-    {"name": "ts_skewness", "args": "(x, d)", "category": "time_series", "description": "Rolling skewness"},
-    {"name": "ts_kurtosis", "args": "(x, d)", "category": "time_series", "description": "Rolling excess kurtosis"},
-    {"name": "ts_zscore", "args": "(x, d)", "category": "time_series", "description": "(x - rolling_mean) / rolling_std"},
-    {"name": "ts_quantile", "args": "(x, d, q=0.5)", "category": "time_series", "description": "Rolling q-th quantile"},
-    {"name": "ts_arg_max", "args": "(x, d)", "category": "time_series", "description": "Days-ago index of rolling max (0 = today)"},
-    {"name": "ts_arg_min", "args": "(x, d)", "category": "time_series", "description": "Days-ago index of rolling min (0 = today)"},
-    {"name": "ts_product", "args": "(x, d)", "category": "time_series", "description": "Rolling product over d periods"},
-    {"name": "ts_returns", "args": "(x, d)", "category": "time_series", "description": "Multi-period simple return: x / x.shift(d) - 1"},
-    {"name": "ts_decay_exp", "args": "(x, d, factor=0.5)", "category": "time_series", "description": "Exponentially-weighted MA over d periods"},
-    {"name": "ts_partial_corr", "args": "(x, y, z, d)", "category": "time_series", "description": "Rolling partial correlation of x,y controlling for z"},
-    {"name": "ts_regression", "args": "(y, x, d)", "category": "time_series", "description": "Rolling OLS slope: cov(x,y) / var(x)"},
-    {"name": "ts_min_max_diff", "args": "(x, d)", "category": "time_series", "description": "Rolling (max - min); volatility proxy"},
+    {
+        "name": "ts_mean",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling mean of x over d periods",
+    },
+    {
+        "name": "ts_std",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling stdev of x over d periods",
+    },
+    {
+        "name": "ts_min",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling min over d periods",
+    },
+    {
+        "name": "ts_max",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling max over d periods",
+    },
+    {
+        "name": "ts_sum",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling sum over d periods",
+    },
+    {
+        "name": "ts_rank",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling percentile rank in [0,1] over d periods",
+    },
+    {
+        "name": "ts_median",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling median",
+    },
+    {
+        "name": "ts_skewness",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling skewness",
+    },
+    {
+        "name": "ts_kurtosis",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling excess kurtosis",
+    },
+    {
+        "name": "ts_zscore",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "(x - rolling_mean) / rolling_std",
+    },
+    {
+        "name": "ts_quantile",
+        "args": "(x, d, q=0.5)",
+        "category": "time_series",
+        "description": "Rolling q-th quantile",
+    },
+    {
+        "name": "ts_arg_max",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Days-ago index of rolling max (0 = today)",
+    },
+    {
+        "name": "ts_arg_min",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Days-ago index of rolling min (0 = today)",
+    },
+    {
+        "name": "ts_product",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling product over d periods",
+    },
+    {
+        "name": "ts_returns",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Multi-period simple return: x / x.shift(d) - 1",
+    },
+    {
+        "name": "ts_decay_exp",
+        "args": "(x, d, factor=0.5)",
+        "category": "time_series",
+        "description": "Exponentially-weighted MA over d periods",
+    },
+    {
+        "name": "ts_partial_corr",
+        "args": "(x, y, z, d)",
+        "category": "time_series",
+        "description": "Rolling partial correlation of x,y controlling for z",
+    },
+    {
+        "name": "ts_regression",
+        "args": "(y, x, d)",
+        "category": "time_series",
+        "description": "Rolling OLS slope: cov(x,y) / var(x)",
+    },
+    {
+        "name": "ts_min_max_diff",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Rolling (max - min); volatility proxy",
+    },
     {"name": "delta", "args": "(x, d)", "category": "time_series", "description": "x - x.shift(d)"},
     {"name": "delay", "args": "(x, d)", "category": "time_series", "description": "x.shift(d)"},
-    {"name": "decay_linear", "args": "(x, d)", "category": "time_series", "description": "Linearly weighted MA over d periods"},
-    {"name": "ts_corr", "args": "(x, y, d)", "category": "time_series", "description": "Rolling Pearson correlation over d periods"},
-    {"name": "ts_cov", "args": "(x, y, d)", "category": "time_series", "description": "Rolling covariance over d periods"},
-    {"name": "days_from_last_change", "args": "(x)", "category": "time_series", "description": "Days since the value last changed (per ticker)"},
-    {"name": "hump", "args": "(x, threshold=0.01)", "category": "time_series", "description": "Smoothing: only update when |x - prev| > threshold"},
+    {
+        "name": "decay_linear",
+        "args": "(x, d)",
+        "category": "time_series",
+        "description": "Linearly weighted MA over d periods",
+    },
+    {
+        "name": "ts_corr",
+        "args": "(x, y, d)",
+        "category": "time_series",
+        "description": "Rolling Pearson correlation over d periods",
+    },
+    {
+        "name": "ts_cov",
+        "args": "(x, y, d)",
+        "category": "time_series",
+        "description": "Rolling covariance over d periods",
+    },
+    {
+        "name": "days_from_last_change",
+        "args": "(x)",
+        "category": "time_series",
+        "description": "Days since the value last changed (per ticker)",
+    },
+    {
+        "name": "hump",
+        "args": "(x, threshold=0.01)",
+        "category": "time_series",
+        "description": "Smoothing: only update when |x - prev| > threshold",
+    },
     # ----- Cross-sectional (per date, axis=1) -----
-    {"name": "rank", "args": "(x)", "category": "cross_sectional", "description": "Cross-sectional percentile rank in [0,1] per date"},
-    {"name": "zscore", "args": "(x)", "category": "cross_sectional", "description": "Cross-sectional z-score per date"},
-    {"name": "demean", "args": "(x)", "category": "cross_sectional", "description": "Subtract cross-sectional mean per date"},
-    {"name": "scale", "args": "(x)", "category": "cross_sectional", "description": "Scale so |sum|=1 per date"},
-    {"name": "normalize", "args": "(x)", "category": "cross_sectional", "description": "Demean then scale to unit |sum|"},
-    {"name": "winsorize", "args": "(x, std=4)", "category": "cross_sectional", "description": "Clip each row at ±std·sigma around the row mean"},
-    {"name": "quantile", "args": "(x, q=0.5)", "category": "cross_sectional", "description": "Per-row q-th quantile broadcast across columns"},
-    {"name": "vector_neut", "args": "(x, y)", "category": "cross_sectional", "description": "Project x orthogonal to y (per row)"},
-    {"name": "regression_neut", "args": "(x, y)", "category": "cross_sectional", "description": "Cross-sectional OLS residual of x on y"},
-    {"name": "bucket", "args": "(x, n=5)", "category": "cross_sectional", "description": "Discretize each row into n equal-frequency buckets [0..n-1]"},
-    {"name": "tail", "args": "(x, lower, upper, replace)", "category": "cross_sectional", "description": "Replace cells outside [lower, upper] with `replace`"},
-    {"name": "kth_element", "args": "(x, k)", "category": "cross_sectional", "description": "Per-row k-th smallest (k=-1 for max)"},
-    {"name": "harmonic_mean", "args": "(x)", "category": "cross_sectional", "description": "Per-row harmonic mean broadcast across columns"},
-    {"name": "geometric_mean", "args": "(x)", "category": "cross_sectional", "description": "Per-row geometric mean broadcast across columns"},
-    {"name": "step", "args": "(x)", "category": "cross_sectional", "description": "Per-row linear ramp from -1 to +1 by rank"},
+    {
+        "name": "rank",
+        "args": "(x)",
+        "category": "cross_sectional",
+        "description": "Cross-sectional percentile rank in [0,1] per date",
+    },
+    {
+        "name": "zscore",
+        "args": "(x)",
+        "category": "cross_sectional",
+        "description": "Cross-sectional z-score per date",
+    },
+    {
+        "name": "demean",
+        "args": "(x)",
+        "category": "cross_sectional",
+        "description": "Subtract cross-sectional mean per date",
+    },
+    {
+        "name": "scale",
+        "args": "(x)",
+        "category": "cross_sectional",
+        "description": "Scale so |sum|=1 per date",
+    },
+    {
+        "name": "normalize",
+        "args": "(x)",
+        "category": "cross_sectional",
+        "description": "Demean then scale to unit |sum|",
+    },
+    {
+        "name": "winsorize",
+        "args": "(x, std=4)",
+        "category": "cross_sectional",
+        "description": "Clip each row at ±std·sigma around the row mean",
+    },
+    {
+        "name": "quantile",
+        "args": "(x, q=0.5)",
+        "category": "cross_sectional",
+        "description": "Per-row q-th quantile broadcast across columns",
+    },
+    {
+        "name": "vector_neut",
+        "args": "(x, y)",
+        "category": "cross_sectional",
+        "description": "Project x orthogonal to y (per row)",
+    },
+    {
+        "name": "regression_neut",
+        "args": "(x, y)",
+        "category": "cross_sectional",
+        "description": "Cross-sectional OLS residual of x on y",
+    },
+    {
+        "name": "bucket",
+        "args": "(x, n=5)",
+        "category": "cross_sectional",
+        "description": "Discretize each row into n equal-frequency buckets [0..n-1]",
+    },
+    {
+        "name": "tail",
+        "args": "(x, lower, upper, replace)",
+        "category": "cross_sectional",
+        "description": "Replace cells outside [lower, upper] with `replace`",
+    },
+    {
+        "name": "kth_element",
+        "args": "(x, k)",
+        "category": "cross_sectional",
+        "description": "Per-row k-th smallest (k=-1 for max)",
+    },
+    {
+        "name": "harmonic_mean",
+        "args": "(x)",
+        "category": "cross_sectional",
+        "description": "Per-row harmonic mean broadcast across columns",
+    },
+    {
+        "name": "geometric_mean",
+        "args": "(x)",
+        "category": "cross_sectional",
+        "description": "Per-row geometric mean broadcast across columns",
+    },
+    {
+        "name": "step",
+        "args": "(x)",
+        "category": "cross_sectional",
+        "description": "Per-row linear ramp from -1 to +1 by rank",
+    },
     # ----- Group operators (require a group label like `sector`) -----
-    {"name": "group_rank", "args": "(x, group)", "category": "group", "description": "Per row, percentile-rank x within each group"},
-    {"name": "group_zscore", "args": "(x, group)", "category": "group", "description": "Per row, z-score within each group"},
-    {"name": "group_neutralize", "args": "(x, group)", "category": "group", "description": "Subtract the group mean from each member"},
-    {"name": "group_mean", "args": "(x, group)", "category": "group", "description": "Broadcast group mean to each member"},
-    {"name": "group_sum", "args": "(x, group)", "category": "group", "description": "Broadcast group sum to each member"},
-    {"name": "group_count", "args": "(x, group)", "category": "group", "description": "Broadcast group count to each member"},
-    {"name": "group_max", "args": "(x, group)", "category": "group", "description": "Broadcast group max to each member"},
-    {"name": "group_min", "args": "(x, group)", "category": "group", "description": "Broadcast group min to each member"},
-    {"name": "group_normalize", "args": "(x, group)", "category": "group", "description": "Demean within group, scale to |sum|=1 per group"},
-    {"name": "group_scale", "args": "(x, group)", "category": "group", "description": "Scale so |sum|=1 within each group"},
+    {
+        "name": "group_rank",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Per row, percentile-rank x within each group",
+    },
+    {
+        "name": "group_zscore",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Per row, z-score within each group",
+    },
+    {
+        "name": "group_neutralize",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Subtract the group mean from each member",
+    },
+    {
+        "name": "group_mean",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Broadcast group mean to each member",
+    },
+    {
+        "name": "group_sum",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Broadcast group sum to each member",
+    },
+    {
+        "name": "group_count",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Broadcast group count to each member",
+    },
+    {
+        "name": "group_max",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Broadcast group max to each member",
+    },
+    {
+        "name": "group_min",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Broadcast group min to each member",
+    },
+    {
+        "name": "group_normalize",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Demean within group, scale to |sum|=1 per group",
+    },
+    {
+        "name": "group_scale",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Scale so |sum|=1 within each group",
+    },
     # ----- Arithmetic / element-wise -----
-    {"name": "abs", "args": "(x)", "category": "arithmetic", "description": "Element-wise absolute value"},
-    {"name": "log", "args": "(x)", "category": "arithmetic", "description": "Element-wise natural log (NaN for x<=0)"},
+    {
+        "name": "abs",
+        "args": "(x)",
+        "category": "arithmetic",
+        "description": "Element-wise absolute value",
+    },
+    {
+        "name": "log",
+        "args": "(x)",
+        "category": "arithmetic",
+        "description": "Element-wise natural log (NaN for x<=0)",
+    },
     {"name": "exp", "args": "(x)", "category": "arithmetic", "description": "Element-wise e^x"},
-    {"name": "sqrt", "args": "(x)", "category": "arithmetic", "description": "Element-wise sqrt (NaN for x<0)"},
-    {"name": "mod", "args": "(x, y)", "category": "arithmetic", "description": "x mod y element-wise (NaN for y=0)"},
-    {"name": "sign", "args": "(x)", "category": "arithmetic", "description": "Element-wise sign (-1, 0, +1)"},
-    {"name": "power", "args": "(x, n)", "category": "arithmetic", "description": "x ** n element-wise"},
-    {"name": "signed_power", "args": "(x, n)", "category": "arithmetic", "description": "sign(x) * |x|^n; preserves sign"},
-    {"name": "sigmoid", "args": "(x)", "category": "arithmetic", "description": "Logistic sigmoid 1/(1+e^-x)"},
-    {"name": "clip", "args": "(x, lo, hi)", "category": "arithmetic", "description": "Clamp each cell to [lo, hi]"},
+    {
+        "name": "sqrt",
+        "args": "(x)",
+        "category": "arithmetic",
+        "description": "Element-wise sqrt (NaN for x<0)",
+    },
+    {
+        "name": "mod",
+        "args": "(x, y)",
+        "category": "arithmetic",
+        "description": "x mod y element-wise (NaN for y=0)",
+    },
+    {
+        "name": "sign",
+        "args": "(x)",
+        "category": "arithmetic",
+        "description": "Element-wise sign (-1, 0, +1)",
+    },
+    {
+        "name": "power",
+        "args": "(x, n)",
+        "category": "arithmetic",
+        "description": "x ** n element-wise",
+    },
+    {
+        "name": "signed_power",
+        "args": "(x, n)",
+        "category": "arithmetic",
+        "description": "sign(x) * |x|^n; preserves sign",
+    },
+    {
+        "name": "sigmoid",
+        "args": "(x)",
+        "category": "arithmetic",
+        "description": "Logistic sigmoid 1/(1+e^-x)",
+    },
+    {
+        "name": "clip",
+        "args": "(x, lo, hi)",
+        "category": "arithmetic",
+        "description": "Clamp each cell to [lo, hi]",
+    },
     {"name": "max", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise max"},
     {"name": "min", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise min"},
-    {"name": "replace", "args": "(x, old, new)", "category": "arithmetic", "description": "Replace cells equal to `old` with `new`"},
-    {"name": "isnan", "args": "(x)", "category": "arithmetic", "description": "1.0 where cell is NaN, else 0.0"},
-    {"name": "equal", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise equality indicator (0/1)"},
-    {"name": "less", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x < y; returns 1.0 / 0.0"},
-    {"name": "greater", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x > y; returns 1.0 / 0.0"},
-    {"name": "less_eq", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x <= y; returns 1.0 / 0.0"},
-    {"name": "greater_eq", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x >= y; returns 1.0 / 0.0"},
-    {"name": "not_equal", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x != y; returns 1.0 / 0.0"},
+    {
+        "name": "replace",
+        "args": "(x, old, new)",
+        "category": "arithmetic",
+        "description": "Replace cells equal to `old` with `new`",
+    },
+    {
+        "name": "isnan",
+        "args": "(x)",
+        "category": "arithmetic",
+        "description": "1.0 where cell is NaN, else 0.0",
+    },
+    {
+        "name": "equal",
+        "args": "(x, y)",
+        "category": "arithmetic",
+        "description": "Element-wise equality indicator (0/1)",
+    },
+    {
+        "name": "less",
+        "args": "(x, y)",
+        "category": "arithmetic",
+        "description": "Element-wise x < y; returns 1.0 / 0.0",
+    },
+    {
+        "name": "greater",
+        "args": "(x, y)",
+        "category": "arithmetic",
+        "description": "Element-wise x > y; returns 1.0 / 0.0",
+    },
+    {
+        "name": "less_eq",
+        "args": "(x, y)",
+        "category": "arithmetic",
+        "description": "Element-wise x <= y; returns 1.0 / 0.0",
+    },
+    {
+        "name": "greater_eq",
+        "args": "(x, y)",
+        "category": "arithmetic",
+        "description": "Element-wise x >= y; returns 1.0 / 0.0",
+    },
+    {
+        "name": "not_equal",
+        "args": "(x, y)",
+        "category": "arithmetic",
+        "description": "Element-wise x != y; returns 1.0 / 0.0",
+    },
     # ----- Conditional / state -----
-    {"name": "if_else", "args": "(cond, x, y)", "category": "conditional", "description": "Element-wise conditional"},
-    {"name": "where", "args": "(cond, x, y)", "category": "conditional", "description": "Alias for if_else with truthy cond"},
-    {"name": "when", "args": "(cond, x)", "category": "conditional", "description": "x where cond is True, else NaN (no carry)"},
-    {"name": "mask", "args": "(x, cond)", "category": "conditional", "description": "Drop cells to NaN where cond is True (inverse of when)"},
-    {"name": "trade_when", "args": "(cond, x, exit_cond=None)", "category": "conditional", "description": "Take x when cond, carry forward; reset on exit_cond"},
-    {"name": "keep", "args": "(x, n)", "category": "conditional", "description": "Per row, keep top-n entries by |x|; zero rest"},
-    {"name": "pasteurize", "args": "(x)", "category": "conditional", "description": "Replace ±inf and NaN with 0"},
+    {
+        "name": "if_else",
+        "args": "(cond, x, y)",
+        "category": "conditional",
+        "description": "Element-wise conditional",
+    },
+    {
+        "name": "where",
+        "args": "(cond, x, y)",
+        "category": "conditional",
+        "description": "Alias for if_else with truthy cond",
+    },
+    {
+        "name": "when",
+        "args": "(cond, x)",
+        "category": "conditional",
+        "description": "x where cond is True, else NaN (no carry)",
+    },
+    {
+        "name": "mask",
+        "args": "(x, cond)",
+        "category": "conditional",
+        "description": "Drop cells to NaN where cond is True (inverse of when)",
+    },
+    {
+        "name": "trade_when",
+        "args": "(cond, x, exit_cond=None)",
+        "category": "conditional",
+        "description": "Take x when cond, carry forward; reset on exit_cond",
+    },
+    {
+        "name": "keep",
+        "args": "(x, n)",
+        "category": "conditional",
+        "description": "Per row, keep top-n entries by |x|; zero rest",
+    },
+    {
+        "name": "pasteurize",
+        "args": "(x)",
+        "category": "conditional",
+        "description": "Replace ±inf and NaN with 0",
+    },
 ]
 
 # Rich field metadata: every entry is {name, category, description}.  Returned
@@ -169,111 +531,439 @@ FIELDS: list[dict[str, str]] = [
     {"name": "low", "category": "price", "description": "Daily low price"},
     {"name": "close", "category": "price", "description": "Closing price"},
     {"name": "volume", "category": "price", "description": "Daily share volume"},
-    {"name": "returns", "category": "price", "description": "Daily simple return (close.pct_change)"},
+    {
+        "name": "returns",
+        "category": "price",
+        "description": "Daily simple return (close.pct_change)",
+    },
     {"name": "vwap", "category": "price", "description": "Typical price (high + low + close) / 3"},
     # ----- price structure (7) -----
-    {"name": "median_price", "category": "price_structure", "description": "Average of high and low; cleaner price estimate than close"},
-    {"name": "weighted_close", "category": "price_structure", "description": "Close-weighted typical price; smoother than simple average"},
-    {"name": "range_", "category": "price_structure", "description": "High minus low; daily volatility proxy (alias: range)"},
-    {"name": "body", "category": "price_structure", "description": "Absolute candle body size; small body indicates indecision"},
-    {"name": "upper_shadow", "category": "price_structure", "description": "Rejection of higher prices; potential bearish signal"},
-    {"name": "lower_shadow", "category": "price_structure", "description": "Rejection of lower prices; potential bullish signal"},
-    {"name": "gap", "category": "price_structure", "description": "Overnight price gap; captures after-hours sentiment"},
+    {
+        "name": "median_price",
+        "category": "price_structure",
+        "description": "Average of high and low; cleaner price estimate than close",
+    },
+    {
+        "name": "weighted_close",
+        "category": "price_structure",
+        "description": "Close-weighted typical price; smoother than simple average",
+    },
+    {
+        "name": "range_",
+        "category": "price_structure",
+        "description": "High minus low; daily volatility proxy (alias: range)",
+    },
+    {
+        "name": "body",
+        "category": "price_structure",
+        "description": "Absolute candle body size; small body indicates indecision",
+    },
+    {
+        "name": "upper_shadow",
+        "category": "price_structure",
+        "description": "Rejection of higher prices; potential bearish signal",
+    },
+    {
+        "name": "lower_shadow",
+        "category": "price_structure",
+        "description": "Rejection of lower prices; potential bullish signal",
+    },
+    {
+        "name": "gap",
+        "category": "price_structure",
+        "description": "Overnight price gap; captures after-hours sentiment",
+    },
     # ----- return variants (5) -----
-    {"name": "log_returns", "category": "return_variants", "description": "Log of price ratio; symmetric and better for compounding"},
-    {"name": "abs_returns", "category": "return_variants", "description": "Absolute daily return; volatility proxy"},
-    {"name": "intraday_return", "category": "return_variants", "description": "Close minus open over open; pure intraday momentum"},
-    {"name": "overnight_return", "category": "return_variants", "description": "Open minus prior close; captures news/earnings reaction"},
-    {"name": "signed_volume", "category": "return_variants", "description": "Volume signed by return direction; money flow proxy"},
+    {
+        "name": "log_returns",
+        "category": "return_variants",
+        "description": "Log of price ratio; symmetric and better for compounding",
+    },
+    {
+        "name": "abs_returns",
+        "category": "return_variants",
+        "description": "Absolute daily return; volatility proxy",
+    },
+    {
+        "name": "intraday_return",
+        "category": "return_variants",
+        "description": "Close minus open over open; pure intraday momentum",
+    },
+    {
+        "name": "overnight_return",
+        "category": "return_variants",
+        "description": "Open minus prior close; captures news/earnings reaction",
+    },
+    {
+        "name": "signed_volume",
+        "category": "return_variants",
+        "description": "Volume signed by return direction; money flow proxy",
+    },
     # ----- volume & liquidity (4) -----
-    {"name": "dollar_volume", "category": "volume_liquidity", "description": "Price times volume; true liquidity measure"},
-    {"name": "adv20", "category": "volume_liquidity", "description": "20-day average daily volume; liquidity baseline"},
-    {"name": "volume_ratio", "category": "volume_liquidity", "description": "Volume divided by adv20; values above 1 indicate unusual activity"},
-    {"name": "amihud", "category": "volume_liquidity", "description": "Absolute return over dollar volume; Amihud illiquidity ratio"},
+    {
+        "name": "dollar_volume",
+        "category": "volume_liquidity",
+        "description": "Price times volume; true liquidity measure",
+    },
+    {
+        "name": "adv20",
+        "category": "volume_liquidity",
+        "description": "20-day average daily volume; liquidity baseline",
+    },
+    {
+        "name": "volume_ratio",
+        "category": "volume_liquidity",
+        "description": "Volume divided by adv20; values above 1 indicate unusual activity",
+    },
+    {
+        "name": "amihud",
+        "category": "volume_liquidity",
+        "description": "Absolute return over dollar volume; Amihud illiquidity ratio",
+    },
     # ----- volatility & risk (5) -----
-    {"name": "true_range", "category": "volatility_risk", "description": "Volatility accounting for gaps; better than simple high-low range"},
-    {"name": "atr", "category": "volatility_risk", "description": "14-day average true range; standard volatility measure"},
-    {"name": "realized_vol", "category": "volatility_risk", "description": "20-day rolling return standard deviation"},
-    {"name": "skewness", "category": "volatility_risk", "description": "60-day rolling return skewness; negative values indicate crash risk"},
-    {"name": "kurtosis", "category": "volatility_risk", "description": "60-day rolling return kurtosis; high values indicate fat tails"},
+    {
+        "name": "true_range",
+        "category": "volatility_risk",
+        "description": "Volatility accounting for gaps; better than simple high-low range",
+    },
+    {
+        "name": "atr",
+        "category": "volatility_risk",
+        "description": "14-day average true range; standard volatility measure",
+    },
+    {
+        "name": "realized_vol",
+        "category": "volatility_risk",
+        "description": "20-day rolling return standard deviation",
+    },
+    {
+        "name": "skewness",
+        "category": "volatility_risk",
+        "description": "60-day rolling return skewness; negative values indicate crash risk",
+    },
+    {
+        "name": "kurtosis",
+        "category": "volatility_risk",
+        "description": "60-day rolling return kurtosis; high values indicate fat tails",
+    },
     # ----- momentum & relative (4) -----
     {"name": "momentum_5", "category": "momentum_relative", "description": "5-day price momentum"},
-    {"name": "momentum_20", "category": "momentum_relative", "description": "20-day price momentum"},
-    {"name": "close_to_high_252", "category": "momentum_relative", "description": "Ratio of close to 52-week high; distance from recent peak"},
-    {"name": "high_low_ratio", "category": "momentum_relative", "description": "High over low; intraday volatility as a ratio"},
+    {
+        "name": "momentum_20",
+        "category": "momentum_relative",
+        "description": "20-day price momentum",
+    },
+    {
+        "name": "close_to_high_252",
+        "category": "momentum_relative",
+        "description": "Ratio of close to 52-week high; distance from recent peak",
+    },
+    {
+        "name": "high_low_ratio",
+        "category": "momentum_relative",
+        "description": "High over low; intraday volatility as a ratio",
+    },
     # ----- Phase B: extended momentum (8) -----
     {"name": "momentum_3", "category": "momentum_relative", "description": "3-day price momentum"},
-    {"name": "momentum_10", "category": "momentum_relative", "description": "10-day price momentum"},
-    {"name": "momentum_60", "category": "momentum_relative", "description": "60-day (3-month) price momentum"},
-    {"name": "momentum_120", "category": "momentum_relative", "description": "120-day (6-month) price momentum"},
-    {"name": "momentum_252", "category": "momentum_relative", "description": "252-day (1-year) price momentum"},
-    {"name": "reversal_5", "category": "momentum_relative", "description": "Negative of momentum_5; short-horizon mean-reversion signal"},
-    {"name": "reversal_20", "category": "momentum_relative", "description": "Negative of momentum_20; mid-horizon mean-reversion signal"},
-    {"name": "momentum_z_60", "category": "momentum_relative", "description": "60-day momentum / 60-day return-vol; risk-adjusted momentum"},
+    {
+        "name": "momentum_10",
+        "category": "momentum_relative",
+        "description": "10-day price momentum",
+    },
+    {
+        "name": "momentum_60",
+        "category": "momentum_relative",
+        "description": "60-day (3-month) price momentum",
+    },
+    {
+        "name": "momentum_120",
+        "category": "momentum_relative",
+        "description": "120-day (6-month) price momentum",
+    },
+    {
+        "name": "momentum_252",
+        "category": "momentum_relative",
+        "description": "252-day (1-year) price momentum",
+    },
+    {
+        "name": "reversal_5",
+        "category": "momentum_relative",
+        "description": "Negative of momentum_5; short-horizon mean-reversion signal",
+    },
+    {
+        "name": "reversal_20",
+        "category": "momentum_relative",
+        "description": "Negative of momentum_20; mid-horizon mean-reversion signal",
+    },
+    {
+        "name": "momentum_z_60",
+        "category": "momentum_relative",
+        "description": "60-day momentum / 60-day return-vol; risk-adjusted momentum",
+    },
     # ----- Phase B: extended volatility (6) -----
-    {"name": "realized_vol_5", "category": "volatility_risk", "description": "5-day rolling return standard deviation"},
-    {"name": "realized_vol_60", "category": "volatility_risk", "description": "60-day rolling return standard deviation"},
-    {"name": "realized_vol_120", "category": "volatility_risk", "description": "120-day rolling return standard deviation"},
-    {"name": "vol_of_vol_20", "category": "volatility_risk", "description": "20-day stdev of realized_vol_20; vol-regime change proxy"},
-    {"name": "parkinson_vol", "category": "volatility_risk", "description": "Range-based vol estimator using high-low; more efficient than close-to-close"},
-    {"name": "garman_klass_vol", "category": "volatility_risk", "description": "OHLC-based vol estimator; combines intraday extremes and gap"},
+    {
+        "name": "realized_vol_5",
+        "category": "volatility_risk",
+        "description": "5-day rolling return standard deviation",
+    },
+    {
+        "name": "realized_vol_60",
+        "category": "volatility_risk",
+        "description": "60-day rolling return standard deviation",
+    },
+    {
+        "name": "realized_vol_120",
+        "category": "volatility_risk",
+        "description": "120-day rolling return standard deviation",
+    },
+    {
+        "name": "vol_of_vol_20",
+        "category": "volatility_risk",
+        "description": "20-day stdev of realized_vol_20; vol-regime change proxy",
+    },
+    {
+        "name": "parkinson_vol",
+        "category": "volatility_risk",
+        "description": "Range-based vol estimator using high-low; more efficient than close-to-close",
+    },
+    {
+        "name": "garman_klass_vol",
+        "category": "volatility_risk",
+        "description": "OHLC-based vol estimator; combines intraday extremes and gap",
+    },
     # ----- Phase B: microstructure (8) -----
-    {"name": "roll_spread", "category": "microstructure", "description": "Roll's effective spread (1984): 2·sqrt(-cov(Δp_t, Δp_{t-1}))"},
-    {"name": "kyle_lambda", "category": "microstructure", "description": "Kyle's lambda price-impact proxy: |returns| / sqrt(dollar_volume)"},
-    {"name": "vpin_proxy", "category": "microstructure", "description": "Order-flow toxicity: |signed_volume| / total_volume, rolling 20"},
-    {"name": "up_volume_ratio", "category": "microstructure", "description": "Fraction of 20-day volume traded on green days"},
-    {"name": "down_volume_ratio", "category": "microstructure", "description": "Fraction of 20-day volume traded on red days"},
-    {"name": "turnover_ratio", "category": "microstructure", "description": "Today's volume vs. 60-day baseline; long-horizon volume_ratio"},
-    {"name": "dollar_amihud", "category": "microstructure", "description": "Smoothed |returns| / dollar_volume; per-dollar-volume price impact"},
-    {"name": "corwin_schultz", "category": "microstructure", "description": "Corwin-Schultz (2012) high-low spread estimator"},
+    {
+        "name": "roll_spread",
+        "category": "microstructure",
+        "description": "Roll's effective spread (1984): 2·sqrt(-cov(Δp_t, Δp_{t-1}))",
+    },
+    {
+        "name": "kyle_lambda",
+        "category": "microstructure",
+        "description": "Kyle's lambda price-impact proxy: |returns| / sqrt(dollar_volume)",
+    },
+    {
+        "name": "vpin_proxy",
+        "category": "microstructure",
+        "description": "Order-flow toxicity: |signed_volume| / total_volume, rolling 20",
+    },
+    {
+        "name": "up_volume_ratio",
+        "category": "microstructure",
+        "description": "Fraction of 20-day volume traded on green days",
+    },
+    {
+        "name": "down_volume_ratio",
+        "category": "microstructure",
+        "description": "Fraction of 20-day volume traded on red days",
+    },
+    {
+        "name": "turnover_ratio",
+        "category": "microstructure",
+        "description": "Today's volume vs. 60-day baseline; long-horizon volume_ratio",
+    },
+    {
+        "name": "dollar_amihud",
+        "category": "microstructure",
+        "description": "Smoothed |returns| / dollar_volume; per-dollar-volume price impact",
+    },
+    {
+        "name": "corwin_schultz",
+        "category": "microstructure",
+        "description": "Corwin-Schultz (2012) high-low spread estimator",
+    },
     # ----- Phase B: extended range / candle structure (6) -----
-    {"name": "atr_5", "category": "volatility_risk", "description": "5-day average true range; short-window vol via TR"},
-    {"name": "atr_60", "category": "volatility_risk", "description": "60-day average true range; long-window vol via TR"},
-    {"name": "range_z_20", "category": "price_structure", "description": "Z-score of today's range vs its 20-day distribution"},
-    {"name": "body_to_range", "category": "price_structure", "description": "|close-open| / range; small body = indecision day"},
-    {"name": "consecutive_up", "category": "price_structure", "description": "Consecutive up-day streak; resets on any down day"},
-    {"name": "consecutive_down", "category": "price_structure", "description": "Consecutive down-day streak; resets on any up day"},
+    {
+        "name": "atr_5",
+        "category": "volatility_risk",
+        "description": "5-day average true range; short-window vol via TR",
+    },
+    {
+        "name": "atr_60",
+        "category": "volatility_risk",
+        "description": "60-day average true range; long-window vol via TR",
+    },
+    {
+        "name": "range_z_20",
+        "category": "price_structure",
+        "description": "Z-score of today's range vs its 20-day distribution",
+    },
+    {
+        "name": "body_to_range",
+        "category": "price_structure",
+        "description": "|close-open| / range; small body = indecision day",
+    },
+    {
+        "name": "consecutive_up",
+        "category": "price_structure",
+        "description": "Consecutive up-day streak; resets on any down day",
+    },
+    {
+        "name": "consecutive_down",
+        "category": "price_structure",
+        "description": "Consecutive down-day streak; resets on any up day",
+    },
     # ----- Phase C: FRED macro (broadcast to every ticker per day) -----
-    {"name": "vix", "category": "macro", "description": "CBOE VIX index — implied vol of S&P 500 options"},
-    {"name": "treasury_3m_yield", "category": "macro", "description": "3-month Treasury constant-maturity yield (%)"},
-    {"name": "treasury_2y_yield", "category": "macro", "description": "2-year Treasury constant-maturity yield (%)"},
-    {"name": "treasury_10y_yield", "category": "macro", "description": "10-year Treasury constant-maturity yield (%)"},
-    {"name": "term_spread_10y_2y", "category": "macro", "description": "10y minus 2y Treasury spread; recession indicator"},
-    {"name": "term_spread_10y_3m", "category": "macro", "description": "10y minus 3m Treasury spread; classic curve inversion gauge"},
-    {"name": "high_yield_spread", "category": "macro", "description": "ICE BofA US High Yield Index option-adjusted spread"},
-    {"name": "baa_yield", "category": "macro", "description": "Moody's seasoned Baa corporate bond yield (%)"},
-    {"name": "aaa_yield", "category": "macro", "description": "Moody's seasoned Aaa corporate bond yield (%)"},
-    {"name": "credit_spread_baa_aaa", "category": "macro", "description": "Baa minus Aaa corporate spread; credit-stress proxy"},
+    {
+        "name": "vix",
+        "category": "macro",
+        "description": "CBOE VIX index — implied vol of S&P 500 options",
+    },
+    {
+        "name": "treasury_3m_yield",
+        "category": "macro",
+        "description": "3-month Treasury constant-maturity yield (%)",
+    },
+    {
+        "name": "treasury_2y_yield",
+        "category": "macro",
+        "description": "2-year Treasury constant-maturity yield (%)",
+    },
+    {
+        "name": "treasury_10y_yield",
+        "category": "macro",
+        "description": "10-year Treasury constant-maturity yield (%)",
+    },
+    {
+        "name": "term_spread_10y_2y",
+        "category": "macro",
+        "description": "10y minus 2y Treasury spread; recession indicator",
+    },
+    {
+        "name": "term_spread_10y_3m",
+        "category": "macro",
+        "description": "10y minus 3m Treasury spread; classic curve inversion gauge",
+    },
+    {
+        "name": "high_yield_spread",
+        "category": "macro",
+        "description": "ICE BofA US High Yield Index option-adjusted spread",
+    },
+    {
+        "name": "baa_yield",
+        "category": "macro",
+        "description": "Moody's seasoned Baa corporate bond yield (%)",
+    },
+    {
+        "name": "aaa_yield",
+        "category": "macro",
+        "description": "Moody's seasoned Aaa corporate bond yield (%)",
+    },
+    {
+        "name": "credit_spread_baa_aaa",
+        "category": "macro",
+        "description": "Baa minus Aaa corporate spread; credit-stress proxy",
+    },
     {"name": "dxy", "category": "macro", "description": "Broad trade-weighted USD index"},
     {"name": "wti_oil", "category": "macro", "description": "WTI crude oil spot price (USD/bbl)"},
     # ----- Phase C: yfinance fundamentals (lagged 1 quarter; non-PIT) -----
-    {"name": "revenue", "category": "fundamentals", "description": "Quarterly total revenue (lagged 1Q)"},
+    {
+        "name": "revenue",
+        "category": "fundamentals",
+        "description": "Quarterly total revenue (lagged 1Q)",
+    },
     {"name": "gross_profit", "category": "fundamentals", "description": "Quarterly gross profit"},
-    {"name": "operating_income", "category": "fundamentals", "description": "Quarterly operating income"},
+    {
+        "name": "operating_income",
+        "category": "fundamentals",
+        "description": "Quarterly operating income",
+    },
     {"name": "net_income", "category": "fundamentals", "description": "Quarterly net income"},
     {"name": "ebitda", "category": "fundamentals", "description": "Quarterly EBITDA"},
-    {"name": "eps", "category": "fundamentals", "description": "Diluted earnings per share (quarterly)"},
-    {"name": "total_assets", "category": "fundamentals", "description": "Balance sheet total assets"},
+    {
+        "name": "eps",
+        "category": "fundamentals",
+        "description": "Diluted earnings per share (quarterly)",
+    },
+    {
+        "name": "total_assets",
+        "category": "fundamentals",
+        "description": "Balance sheet total assets",
+    },
     {"name": "total_debt", "category": "fundamentals", "description": "Balance sheet total debt"},
-    {"name": "total_equity", "category": "fundamentals", "description": "Balance sheet total stockholders equity (book value)"},
+    {
+        "name": "total_equity",
+        "category": "fundamentals",
+        "description": "Balance sheet total stockholders equity (book value)",
+    },
     {"name": "cash", "category": "fundamentals", "description": "Cash and cash equivalents"},
     {"name": "current_assets", "category": "fundamentals", "description": "Total current assets"},
-    {"name": "current_liabilities", "category": "fundamentals", "description": "Total current liabilities"},
-    {"name": "operating_cash_flow", "category": "fundamentals", "description": "Cash from operating activities"},
-    {"name": "capex", "category": "fundamentals", "description": "Capital expenditure (negative in yfinance)"},
-    {"name": "free_cash_flow", "category": "fundamentals", "description": "OCF + capex (or yfinance-supplied)"},
+    {
+        "name": "current_liabilities",
+        "category": "fundamentals",
+        "description": "Total current liabilities",
+    },
+    {
+        "name": "operating_cash_flow",
+        "category": "fundamentals",
+        "description": "Cash from operating activities",
+    },
+    {
+        "name": "capex",
+        "category": "fundamentals",
+        "description": "Capital expenditure (negative in yfinance)",
+    },
+    {
+        "name": "free_cash_flow",
+        "category": "fundamentals",
+        "description": "OCF + capex (or yfinance-supplied)",
+    },
     # Computed ratios (raw fundamentals × close)
-    {"name": "pe_ratio", "category": "fundamentals_ratio", "description": "Price-to-earnings: market_cap / net_income"},
-    {"name": "pb_ratio", "category": "fundamentals_ratio", "description": "Price-to-book: market_cap / total_equity"},
-    {"name": "ps_ratio", "category": "fundamentals_ratio", "description": "Price-to-sales: market_cap / revenue"},
-    {"name": "ev_ebitda", "category": "fundamentals_ratio", "description": "Enterprise value / EBITDA"},
-    {"name": "roe", "category": "fundamentals_ratio", "description": "Return on equity: net_income / total_equity"},
-    {"name": "roa", "category": "fundamentals_ratio", "description": "Return on assets: net_income / total_assets"},
-    {"name": "debt_to_equity", "category": "fundamentals_ratio", "description": "Total debt / total equity"},
-    {"name": "current_ratio", "category": "fundamentals_ratio", "description": "Current assets / current liabilities"},
-    {"name": "gross_margin", "category": "fundamentals_ratio", "description": "Gross profit / revenue"},
-    {"name": "operating_margin", "category": "fundamentals_ratio", "description": "Operating income / revenue"},
-    {"name": "fcf_yield", "category": "fundamentals_ratio", "description": "Free cash flow / market cap"},
+    {
+        "name": "pe_ratio",
+        "category": "fundamentals_ratio",
+        "description": "Price-to-earnings: market_cap / net_income",
+    },
+    {
+        "name": "pb_ratio",
+        "category": "fundamentals_ratio",
+        "description": "Price-to-book: market_cap / total_equity",
+    },
+    {
+        "name": "ps_ratio",
+        "category": "fundamentals_ratio",
+        "description": "Price-to-sales: market_cap / revenue",
+    },
+    {
+        "name": "ev_ebitda",
+        "category": "fundamentals_ratio",
+        "description": "Enterprise value / EBITDA",
+    },
+    {
+        "name": "roe",
+        "category": "fundamentals_ratio",
+        "description": "Return on equity: net_income / total_equity",
+    },
+    {
+        "name": "roa",
+        "category": "fundamentals_ratio",
+        "description": "Return on assets: net_income / total_assets",
+    },
+    {
+        "name": "debt_to_equity",
+        "category": "fundamentals_ratio",
+        "description": "Total debt / total equity",
+    },
+    {
+        "name": "current_ratio",
+        "category": "fundamentals_ratio",
+        "description": "Current assets / current liabilities",
+    },
+    {
+        "name": "gross_margin",
+        "category": "fundamentals_ratio",
+        "description": "Gross profit / revenue",
+    },
+    {
+        "name": "operating_margin",
+        "category": "fundamentals_ratio",
+        "description": "Operating income / revenue",
+    },
+    {
+        "name": "fcf_yield",
+        "category": "fundamentals_ratio",
+        "description": "Free cash flow / market cap",
+    },
 ]
 
 # Plain-name list for callers that only want field names.
@@ -304,12 +994,8 @@ async def lifespan(_app: FastAPI):
     fetcher.download_universe(tickers=pool)
 
     spy_fetcher = DataFetcher()
-    spy_frames = spy_fetcher.download_universe(
-        tickers=["SPY"], compute_derived=False
-    )
-    spy_returns = (
-        spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
-    )
+    spy_frames = spy_fetcher.download_universe(tickers=["SPY"], compute_derived=False)
+    spy_returns = spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
 
     # Fama-French 5 factor returns (Mkt-RF, SMB, HML, RMW, CMA + RF) cached
     # weekly.  Network failure is non-fatal — factor decomposition just gets
@@ -401,6 +1087,7 @@ async def _rate_limit_handler(_request: Request, exc: RateLimitExceeded):
         content={"detail": f"Rate limit exceeded: {exc.detail}"},
     )
 
+
 # Dev keeps "*" so a browser can hit the API from any localhost variant or
 # from a LAN box; production tightens to the configured allow-list.
 _cors_origins = ["*"] if ENVIRONMENT != "production" else ALLOWED_ORIGINS
@@ -434,11 +1121,29 @@ class _JsonFormatter(logging.Formatter):
             if key in payload or key.startswith("_"):
                 continue
             if key in (
-                "args", "asctime", "created", "exc_info", "exc_text",
-                "filename", "funcName", "levelname", "levelno", "lineno",
-                "module", "msecs", "message", "msg", "name", "pathname",
-                "process", "processName", "relativeCreated", "stack_info",
-                "thread", "threadName", "taskName",
+                "args",
+                "asctime",
+                "created",
+                "exc_info",
+                "exc_text",
+                "filename",
+                "funcName",
+                "levelname",
+                "levelno",
+                "lineno",
+                "module",
+                "msecs",
+                "message",
+                "msg",
+                "name",
+                "pathname",
+                "process",
+                "processName",
+                "relativeCreated",
+                "stack_info",
+                "thread",
+                "threadName",
+                "taskName",
             ):
                 continue
             try:
@@ -456,9 +1161,7 @@ def _configure_logging() -> None:
     if ENVIRONMENT == "production":
         handler.setFormatter(_JsonFormatter())
     else:
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     root = logging.getLogger()
     # Replace any handlers uvicorn might have already attached
     root.handlers = [handler]
@@ -493,10 +1196,7 @@ def require_api_token(authorization: str | None = Header(default=None)) -> None:
     if not hmac.compare_digest(provided.encode(), expected.encode()):
         raise HTTPException(
             status_code=401,
-            detail=(
-                "Missing or invalid Authorization header. "
-                "Send: Authorization: Bearer <token>"
-            ),
+            detail=("Missing or invalid Authorization header. Send: Authorization: Bearer <token>"),
         )
 
 
@@ -545,8 +1245,7 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
                 status_code=400,
                 detail=(
                     f"None of the {len(tickers)} custom tickers could be loaded "
-                    f"from yfinance: {', '.join(failed[:10])}"
-                    + ("…" if len(failed) > 10 else "")
+                    f"from yfinance: {', '.join(failed[:10])}" + ("…" if len(failed) > 10 else "")
                 ),
             )
         return live, gics_for(live), "custom"
@@ -559,9 +1258,7 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
     return u["tickers"], u["gics"], uid
 
 
-def _make_config(
-    settings: dict | None, *, run_oos: bool = True
-) -> SimulationConfig:
+def _make_config(settings: dict | None, *, run_oos: bool = True) -> SimulationConfig:
     s = settings or {}
     tickers, _, _ = _resolve_universe(s)
     return SimulationConfig(
@@ -628,9 +1325,18 @@ def _evaluate(expression: str) -> pd.DataFrame:
 
 
 _METRIC_KEYS = (
-    "sharpe", "annual_return", "annual_vol", "max_drawdown",
-    "calmar_ratio", "sortino_ratio", "avg_turnover", "fitness",
-    "win_rate", "profit_factor", "beta", "information_ratio",
+    "sharpe",
+    "annual_return",
+    "annual_vol",
+    "max_drawdown",
+    "calmar_ratio",
+    "sortino_ratio",
+    "avg_turnover",
+    "fitness",
+    "win_rate",
+    "profit_factor",
+    "beta",
+    "information_ratio",
 )
 
 
@@ -739,7 +1445,9 @@ def _build_response(
         "monthly_returns": monthly_returns,
         "expression": expression,
         "settings": settings_out,
-        "data_quality": _data_quality(cfg, alpha_matrix, universe_id=universe_id, gics_map=gics_map),
+        "data_quality": _data_quality(
+            cfg, alpha_matrix, universe_id=universe_id, gics_map=gics_map
+        ),
     }
 
 
@@ -783,8 +1491,7 @@ def _data_quality(
             pit_block.update(summary)
             if summary["tickers_affected"]:
                 affected = ", ".join(
-                    f"{a['ticker']} (joined {a['join_date']}, "
-                    f"{a['days_masked']} days masked)"
+                    f"{a['ticker']} (joined {a['join_date']}, {a['days_masked']} days masked)"
                     for a in summary["tickers_affected"]
                 )
                 notes.append(
@@ -885,10 +1592,12 @@ def get_universes():
     out = []
     for u in list_universes():
         full = get_universe(u["id"])
-        out.append({
-            **u,
-            "available_neutralizations": available_neutralizations(full["gics"]),
-        })
+        out.append(
+            {
+                **u,
+                "available_neutralizations": available_neutralizations(full["gics"]),
+            }
+        )
     return {"universes": out, "default": default_universe_id()}
 
 
@@ -1004,33 +1713,39 @@ def sweep(request: Request, req: SweepRequest):
             ast = Parser().parse(expr)
             errors = [d for d in lint_ast(ast) if d["severity"] == "error"]
             if errors:
-                cells.append({
-                    "expression": expr,
-                    "params": params,
-                    "error": errors[0]["message"],
-                })
+                cells.append(
+                    {
+                        "expression": expr,
+                        "params": params,
+                        "error": errors[0]["message"],
+                    }
+                )
                 continue
 
             alpha = _evaluate(expr)
             is_result, _ = bt.run(alpha, cfg)
             metrics, _, _ = _compute_perf_pack(is_result, perf, spy=spy, n_trials=1)
         except (ValueError, HTTPException) as exc:
-            cells.append({
-                "expression": expr,
-                "params": params,
-                "error": str(getattr(exc, "detail", exc)),
-            })
+            cells.append(
+                {
+                    "expression": expr,
+                    "params": params,
+                    "error": str(getattr(exc, "detail", exc)),
+                }
+            )
             continue
 
-        cells.append({
-            "expression": expr,
-            "params": params,
-            "sharpe": metrics.get("sharpe"),
-            "annual_return": metrics.get("annual_return"),
-            "max_drawdown": metrics.get("max_drawdown"),
-            "fitness": metrics.get("fitness"),
-            "avg_turnover": metrics.get("avg_turnover"),
-        })
+        cells.append(
+            {
+                "expression": expr,
+                "params": params,
+                "sharpe": metrics.get("sharpe"),
+                "annual_return": metrics.get("annual_return"),
+                "max_drawdown": metrics.get("max_drawdown"),
+                "fitness": metrics.get("fitness"),
+                "avg_turnover": metrics.get("avg_turnover"),
+            }
+        )
 
     return {
         "expression": req.expression,
@@ -1072,32 +1787,41 @@ def compare_alphas(request: Request, req: CompareRequest):
             ast = Parser().parse(expr)
             errors = [d for d in lint_ast(ast) if d["severity"] == "error"]
             if errors:
-                out_alphas.append({
-                    "label": labels[i],
-                    "expression": expr,
-                    "error": errors[0]["message"],
-                })
+                out_alphas.append(
+                    {
+                        "label": labels[i],
+                        "expression": expr,
+                        "error": errors[0]["message"],
+                    }
+                )
                 continue
 
             alpha_matrix = _evaluate(expr)
             is_result, _ = bt.run(alpha_matrix, cfg)
             metrics, timeseries, _ = _compute_perf_pack(
-                is_result, perf, spy=spy, n_trials=req.n_trials,
+                is_result,
+                perf,
+                spy=spy,
+                n_trials=req.n_trials,
             )
         except (ValueError, HTTPException) as exc:
-            out_alphas.append({
-                "label": labels[i],
-                "expression": expr,
-                "error": str(getattr(exc, "detail", exc)),
-            })
+            out_alphas.append(
+                {
+                    "label": labels[i],
+                    "expression": expr,
+                    "error": str(getattr(exc, "detail", exc)),
+                }
+            )
             continue
 
-        out_alphas.append({
-            "label": labels[i],
-            "expression": expr,
-            "metrics": metrics,
-            "timeseries": timeseries,
-        })
+        out_alphas.append(
+            {
+                "label": labels[i],
+                "expression": expr,
+                "metrics": metrics,
+                "timeseries": timeseries,
+            }
+        )
 
     return {
         "alphas": out_alphas,
@@ -1157,12 +1881,11 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
     else:
         try:
             from analytics.mv_optimizer import compute_weights
+
             returns_df = pd.concat(return_series, axis=1).dropna(how="any")
             if returns_df.empty:
                 raise ValueError("All alphas had empty return series after alignment")
-            computed = compute_weights(
-                req.weight_method, returns_df, target_vol=req.target_vol
-            )
+            computed = compute_weights(req.weight_method, returns_df, target_vol=req.target_vol)
             weight_method_used = req.weight_method
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -1334,7 +2057,7 @@ async def alphas_correlations(req: CorrelationRequest):
             rets += list(oos_ts["daily_returns"])
         if not dates or not rets:
             continue
-        label = (r["name"] or f"alpha_{r['id']}")
+        label = r["name"] or f"alpha_{r['id']}"
         # If duplicate names, disambiguate by id
         if label in series:
             label = f"{label}#{r['id']}"

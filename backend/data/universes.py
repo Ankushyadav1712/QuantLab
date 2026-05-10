@@ -661,39 +661,167 @@ _GICS_CATALOG: dict[str, tuple[str, str, str, str]] = {
 
 # The 50-name S&P 100 subset that has been the platform's default since v1.
 _SP100_50 = [
-    "AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V",
-    "UNH", "XOM", "LLY", "JNJ", "WMT", "MA", "PG", "HD", "CVX", "MRK",
-    "ABBV", "AVGO", "COST", "PEP", "KO", "ADBE", "CSCO", "CRM", "ACN", "MCD",
-    "TMO", "ABT", "NFLX", "LIN", "DHR", "TXN", "NKE", "VZ", "AMGN", "PM",
-    "MS", "GS", "RTX", "INTC", "SPGI", "BLK", "MDLZ", "ADP", "GILD", "T",
+    "AAPL",
+    "MSFT",
+    "GOOG",
+    "AMZN",
+    "NVDA",
+    "META",
+    "TSLA",
+    "BRK-B",
+    "JPM",
+    "V",
+    "UNH",
+    "XOM",
+    "LLY",
+    "JNJ",
+    "WMT",
+    "MA",
+    "PG",
+    "HD",
+    "CVX",
+    "MRK",
+    "ABBV",
+    "AVGO",
+    "COST",
+    "PEP",
+    "KO",
+    "ADBE",
+    "CSCO",
+    "CRM",
+    "ACN",
+    "MCD",
+    "TMO",
+    "ABT",
+    "NFLX",
+    "LIN",
+    "DHR",
+    "TXN",
+    "NKE",
+    "VZ",
+    "AMGN",
+    "PM",
+    "MS",
+    "GS",
+    "RTX",
+    "INTC",
+    "SPGI",
+    "BLK",
+    "MDLZ",
+    "ADP",
+    "GILD",
+    "T",
 ]
 
 # Extended S&P 100 — adds 25 of the larger non-50 members.  Not an exhaustive
 # enumeration of all 100 names; that would require curating ~50 more GICS
 # rows for marginal value.  Add more by extending the list + catalog.
-_SP100_EXTENDED = sorted(set(_SP100_50 + [
-    "AMD", "ORCL", "QCOM", "IBM", "INTU", "AMAT", "MU", "ADI", "LRCX", "KLAC",
-    "CMCSA", "DIS", "TMUS", "BKNG", "SBUX", "LOW", "F", "GM",
-    "PFE", "ISRG", "MDT", "BMY", "BAC", "WFC", "C", "AXP", "SCHW",
-    "COP", "OXY", "HON", "BA", "CAT", "GE", "LMT", "UPS", "FDX", "UNP", "MMM",
-    "MO",
-]))
+_SP100_EXTENDED = sorted(
+    set(
+        _SP100_50
+        + [
+            "AMD",
+            "ORCL",
+            "QCOM",
+            "IBM",
+            "INTU",
+            "AMAT",
+            "MU",
+            "ADI",
+            "LRCX",
+            "KLAC",
+            "CMCSA",
+            "DIS",
+            "TMUS",
+            "BKNG",
+            "SBUX",
+            "LOW",
+            "F",
+            "GM",
+            "PFE",
+            "ISRG",
+            "MDT",
+            "BMY",
+            "BAC",
+            "WFC",
+            "C",
+            "AXP",
+            "SCHW",
+            "COP",
+            "OXY",
+            "HON",
+            "BA",
+            "CAT",
+            "GE",
+            "LMT",
+            "UPS",
+            "FDX",
+            "UNP",
+            "MMM",
+            "MO",
+        ]
+    )
+)
 
 # NASDAQ-100 leaning subset — heavily tech/communications, no banks, no oil.
-_NASDAQ100 = sorted({
-    "AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AVGO", "COST",
-    "NFLX", "PEP", "ADBE", "CSCO", "INTC", "AMGN", "GILD", "AMD", "QCOM",
-    "INTU", "AMAT", "MU", "LRCX", "KLAC", "ADI", "MRVL", "PANW", "FTNT",
-    "CDNS", "SNPS", "ASML", "BKNG", "ABNB", "SBUX", "MNST", "ISRG",
-    "REGN", "VRTX", "MDLZ", "PYPL", "TMUS", "CMCSA", "TXN", "ORCL",
-    "PCAR", "NOW",
-})
+_NASDAQ100 = sorted(
+    {
+        "AAPL",
+        "MSFT",
+        "GOOG",
+        "AMZN",
+        "NVDA",
+        "META",
+        "TSLA",
+        "AVGO",
+        "COST",
+        "NFLX",
+        "PEP",
+        "ADBE",
+        "CSCO",
+        "INTC",
+        "AMGN",
+        "GILD",
+        "AMD",
+        "QCOM",
+        "INTU",
+        "AMAT",
+        "MU",
+        "LRCX",
+        "KLAC",
+        "ADI",
+        "MRVL",
+        "PANW",
+        "FTNT",
+        "CDNS",
+        "SNPS",
+        "ASML",
+        "BKNG",
+        "ABNB",
+        "SBUX",
+        "MNST",
+        "ISRG",
+        "REGN",
+        "VRTX",
+        "MDLZ",
+        "PYPL",
+        "TMUS",
+        "CMCSA",
+        "TXN",
+        "ORCL",
+        "PCAR",
+        "NOW",
+    }
+)
 
 # Tech / Comm Services focus — useful for sector-specific cross-sectional alphas.
-_TECH_FOCUS = sorted({
-    t for t, gics in _GICS_CATALOG.items()
-    if gics[0] in ("Information Technology", "Communication Services")
-})
+_TECH_FOCUS = sorted(
+    {
+        t
+        for t, gics in _GICS_CATALOG.items()
+        if gics[0] in ("Information Technology", "Communication Services")
+    }
+)
 
 
 _UNIVERSES: dict[str, dict[str, Any]] = {
@@ -734,13 +862,15 @@ def list_universes() -> list[dict[str, Any]]:
     """All built-in universes with metadata for the /api/universes endpoint."""
     out = []
     for uid, u in _UNIVERSES.items():
-        out.append({
-            "id": uid,
-            "name": u["name"],
-            "description": u["description"],
-            "ticker_count": len(u["tickers"]),
-            "is_default": u["is_default"],
-        })
+        out.append(
+            {
+                "id": uid,
+                "name": u["name"],
+                "description": u["description"],
+                "ticker_count": len(u["tickers"]),
+                "is_default": u["is_default"],
+            }
+        )
     return out
 
 
@@ -751,10 +881,7 @@ def get_universe(universe_id: str) -> dict[str, Any]:
     translate to a 400 with a useful message.
     """
     if universe_id not in _UNIVERSES:
-        raise KeyError(
-            f"Unknown universe {universe_id!r}. "
-            f"Known: {sorted(_UNIVERSES.keys())}"
-        )
+        raise KeyError(f"Unknown universe {universe_id!r}. Known: {sorted(_UNIVERSES.keys())}")
     u = _UNIVERSES[universe_id]
     return {
         "id": universe_id,

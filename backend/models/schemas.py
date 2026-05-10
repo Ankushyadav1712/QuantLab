@@ -56,9 +56,10 @@ class AlphaRecord(BaseModel):
 
 class MultiAlphaRequest(BaseModel):
     alphas: list[dict[str, Any]] = Field(
-        ..., description="Each item: {expression: str, weight: float}. "
-                         "When weight_method != 'equal', user-supplied weights "
-                         "are ignored and the optimizer's output is used instead."
+        ...,
+        description="Each item: {expression: str, weight: float}. "
+        "When weight_method != 'equal', user-supplied weights "
+        "are ignored and the optimizer's output is used instead.",
     )
     settings: dict[str, Any] | None = None
     # New: covariance-aware weighting (defaults to "equal" for backwards compat).
@@ -76,6 +77,7 @@ class CorrelationRequest(BaseModel):
 class SweepRequest(BaseModel):
     """Run a parameter sweep — expand ``{a..b:s}`` tokens in the expression
     into a cartesian product, run each cell IS-only, return a flat grid."""
+
     expression: str
     settings: dict[str, Any] | None = None
     # Hard ceiling on the cartesian product so a misconfigured sweep can't
@@ -90,9 +92,12 @@ class CompareRequest(BaseModel):
     Validation against the chosen-best is left to running each winner through
     /api/simulate separately.
     """
+
     expressions: list[str] = Field(
-        ..., description="2 to 4 alpha expressions to compare side-by-side",
-        min_length=2, max_length=4,
+        ...,
+        description="2 to 4 alpha expressions to compare side-by-side",
+        min_length=2,
+        max_length=4,
     )
     settings: dict[str, Any] | None = None
     n_trials: int = 1

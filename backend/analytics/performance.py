@@ -5,10 +5,9 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-
-from analytics.deflated_sharpe import deflated_sharpe
 from engine.backtester import BacktestResult
 
+from analytics.deflated_sharpe import deflated_sharpe
 
 TRADING_DAYS_PER_YEAR = 252
 ROLLING_SHARPE_WINDOW = 63
@@ -46,9 +45,7 @@ class PerformanceAnalytics:
         mean_dr = float(daily_returns.mean()) if n else 0.0
         std_dr = float(daily_returns.std(ddof=1)) if n > 1 else 0.0
 
-        sharpe = (
-            mean_dr / std_dr * math.sqrt(TRADING_DAYS_PER_YEAR) if std_dr > 0 else 0.0
-        )
+        sharpe = mean_dr / std_dr * math.sqrt(TRADING_DAYS_PER_YEAR) if std_dr > 0 else 0.0
 
         # CAGR using booksize-relative additive returns: equity = 1 + cumsum(daily_returns)
         total_return = float(daily_returns.sum())
@@ -71,9 +68,7 @@ class PerformanceAnalytics:
         neg = daily_returns[daily_returns < 0]
         downside_std = float(neg.std(ddof=1)) if len(neg) > 1 else 0.0
         sortino = (
-            mean_dr / downside_std * math.sqrt(TRADING_DAYS_PER_YEAR)
-            if downside_std > 0
-            else 0.0
+            mean_dr / downside_std * math.sqrt(TRADING_DAYS_PER_YEAR) if downside_std > 0 else 0.0
         )
 
         avg_turnover_dollars = float(turnover.mean()) if n else 0.0
@@ -85,14 +80,8 @@ class PerformanceAnalytics:
             if positions is not None and not positions.empty
             else 0.0
         )
-        avg_turnover_frac = (
-            avg_turnover_dollars / book_proxy if book_proxy > 0 else 0.0
-        )
-        fitness = (
-            sharpe
-            * math.sqrt(abs(annual_return))
-            * max(0.0, 1.0 - avg_turnover_frac)
-        )
+        avg_turnover_frac = avg_turnover_dollars / book_proxy if book_proxy > 0 else 0.0
+        fitness = sharpe * math.sqrt(abs(annual_return)) * max(0.0, 1.0 - avg_turnover_frac)
 
         win_rate = float((daily_pnl > 0).mean()) if n else 0.0
 
@@ -108,11 +97,7 @@ class PerformanceAnalytics:
         beta: float | None = None
         information_ratio: float | None = None
         if benchmark_returns is not None and len(benchmark_returns) > 0:
-            bench = (
-                pd.Series(benchmark_returns)
-                .reindex(daily_returns.index)
-                .fillna(0.0)
-            )
+            bench = pd.Series(benchmark_returns).reindex(daily_returns.index).fillna(0.0)
             bench_var = float(bench.var(ddof=1))
             if bench_var > 0:
                 cov = float(np.cov(daily_returns.values, bench.values, ddof=1)[0, 1])
@@ -120,24 +105,21 @@ class PerformanceAnalytics:
             diff = daily_returns - bench
             diff_std = float(diff.std(ddof=1)) if len(diff) > 1 else 0.0
             if diff_std > 0:
-                information_ratio = (
-                    float(diff.mean()) / diff_std * math.sqrt(TRADING_DAYS_PER_YEAR)
-                )
+                information_ratio = float(diff.mean()) / diff_std * math.sqrt(TRADING_DAYS_PER_YEAR)
 
         # Time series for charts
         rolling_sharpe = daily_returns.rolling(ROLLING_SHARPE_WINDOW).apply(
-            lambda x: (x.mean() / x.std(ddof=1) * math.sqrt(TRADING_DAYS_PER_YEAR))
-            if x.std(ddof=1) > 0
-            else np.nan,
+            lambda x: (
+                (x.mean() / x.std(ddof=1) * math.sqrt(TRADING_DAYS_PER_YEAR))
+                if x.std(ddof=1) > 0
+                else np.nan
+            ),
             raw=False,
         )
 
-        monthly = daily_returns.groupby(
-            [daily_returns.index.year, daily_returns.index.month]
-        ).sum()
+        monthly = daily_returns.groupby([daily_returns.index.year, daily_returns.index.month]).sum()
         monthly_returns = [
-            [int(year), int(month), _safe_float(value)]
-            for (year, month), value in monthly.items()
+            [int(year), int(month), _safe_float(value)] for (year, month), value in monthly.items()
         ]
 
         # Per-year Sharpe + return — exposes regime fragility that the
@@ -146,17 +128,15 @@ class PerformanceAnalytics:
         for year, group in daily_returns.groupby(daily_returns.index.year):
             mean_y = float(group.mean()) if len(group) else 0.0
             std_y = float(group.std(ddof=1)) if len(group) > 1 else 0.0
-            year_sharpe = (
-                mean_y / std_y * math.sqrt(TRADING_DAYS_PER_YEAR)
-                if std_y > 0
-                else 0.0
+            year_sharpe = mean_y / std_y * math.sqrt(TRADING_DAYS_PER_YEAR) if std_y > 0 else 0.0
+            yearly_returns.append(
+                {
+                    "year": int(year),
+                    "sharpe": _safe_float(year_sharpe),
+                    "annual_return": _safe_float(group.sum()),
+                    "n_days": int(len(group)),
+                }
             )
-            yearly_returns.append({
-                "year": int(year),
-                "sharpe": _safe_float(year_sharpe),
-                "annual_return": _safe_float(group.sum()),
-                "n_days": int(len(group)),
-            })
 
         # Deflated Sharpe (Bailey & López de Prado): adjusts the headline
         # Sharpe for the selection bias from running ``n_trials`` candidates.
@@ -185,9 +165,7 @@ class PerformanceAnalytics:
             "profit_factor": _safe_float(profit_factor),
             "beta": _safe_float(beta) if beta is not None else None,
             "information_ratio": (
-                _safe_float(information_ratio)
-                if information_ratio is not None
-                else None
+                _safe_float(information_ratio) if information_ratio is not None else None
             ),
             "rolling_sharpe": _safe_list(rolling_sharpe.tolist()),
             "monthly_returns": monthly_returns,
@@ -214,14 +192,10 @@ class PerformanceAnalytics:
         oos_return = oos_metrics.get("annual_return") or 0.0
 
         sharpe_decay = (
-            (is_sharpe - oos_sharpe) / abs(is_sharpe)
-            if is_sharpe not in (0, 0.0)
-            else 0.0
+            (is_sharpe - oos_sharpe) / abs(is_sharpe) if is_sharpe not in (0, 0.0) else 0.0
         )
         return_decay = (
-            (is_return - oos_return) / abs(is_return)
-            if is_return not in (0, 0.0)
-            else 0.0
+            (is_return - oos_return) / abs(is_return) if is_return not in (0, 0.0) else 0.0
         )
 
         overfitting_flag = bool(sharpe_decay > 0.5 or oos_sharpe < 0)

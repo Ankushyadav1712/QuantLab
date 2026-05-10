@@ -25,9 +25,7 @@ from itertools import product
 from typing import Any
 
 # Matches {a..b} and {a..b:s} where a, b, s are signed integers or decimals.
-SWEEP_RE = re.compile(
-    r"\{(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)(?::(-?\d+(?:\.\d+)?))?\}"
-)
+SWEEP_RE = re.compile(r"\{(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)(?::(-?\d+(?:\.\d+)?))?\}")
 
 
 def _generate_values(start: float, end: float, step: float) -> list[int | float]:
@@ -41,9 +39,7 @@ def _generate_values(start: float, end: float, step: float) -> list[int | float]
     if end < start:
         raise ValueError(f"Sweep end must be >= start (got {start}..{end})")
 
-    all_int = (
-        float(start).is_integer() and float(end).is_integer() and float(step).is_integer()
-    )
+    all_int = float(start).is_integer() and float(end).is_integer() and float(step).is_integer()
     values: list[int | float] = []
     v = start
     # Add a small epsilon to absorb float rounding so the endpoint is included
@@ -73,9 +69,7 @@ def expand_sweeps(expression: str, max_combinations: int = 50) -> dict[str, Any]
     """
     matches = list(SWEEP_RE.finditer(expression))
     if not matches:
-        raise ValueError(
-            "Expression has no sweep tokens. Use {a..b} or {a..b:s} syntax."
-        )
+        raise ValueError("Expression has no sweep tokens. Use {a..b} or {a..b:s} syntax.")
 
     dimensions: list[dict[str, Any]] = []
     value_lists: list[list[int | float]] = []

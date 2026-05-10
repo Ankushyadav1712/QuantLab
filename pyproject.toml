@@ -20,6 +20,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "backend/tests/*" = ["F401", "F811"]  # fixtures often look unused / re-imported
+# Scripts manipulate sys.path before importing project modules — E402 (import-not-at-top)
+# is the intentional pattern, not a violation.
+"backend/scripts/*" = ["E402"]
 
 [tool.ruff.format]
 quote-style = "double"

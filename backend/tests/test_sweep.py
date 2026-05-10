@@ -1,11 +1,9 @@
 """Parameter sweep — tokenizer + cartesian expansion + endpoint."""
 
 import pytest
-from fastapi.testclient import TestClient
-
 from engine.sweep import combo_for_index, expand_sweeps, has_sweep_syntax
+from fastapi.testclient import TestClient
 from main import app
-
 
 # ---------- Detection ----------
 

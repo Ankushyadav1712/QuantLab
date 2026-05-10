@@ -5,8 +5,8 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
-
 from data.sp100_history import build_membership_mask
+
 from engine import operators as ops
 
 
@@ -109,10 +109,7 @@ class Backtester:
         # Synthesize sector_map from gics_map if only the latter was given —
         # keeps the legacy 'sector' code path working without branching.
         if gics_map and not sector_map:
-            self.sector_map = {
-                t: row.get("sector") or "Unknown"
-                for t, row in gics_map.items()
-            }
+            self.sector_map = {t: row.get("sector") or "Unknown" for t, row in gics_map.items()}
 
     def run(
         self, alpha_matrix: pd.DataFrame, config: SimulationConfig
@@ -126,9 +123,7 @@ class Backtester:
         # 1. Universe + date filter (applies to both halves identically)
         cols = [t for t in config.universe if t in alpha_matrix.columns]
         if not cols:
-            raise ValueError(
-                "No tickers in alpha_matrix match the configured universe"
-            )
+            raise ValueError("No tickers in alpha_matrix match the configured universe")
 
         alpha = alpha_matrix[cols].copy()
         alpha.index = pd.to_datetime(alpha.index)
@@ -137,18 +132,14 @@ class Backtester:
         alpha = alpha.loc[(alpha.index >= start) & (alpha.index <= end)]
 
         if alpha.empty:
-            raise ValueError(
-                "Alpha matrix is empty after applying date/universe filter"
-            )
+            raise ValueError("Alpha matrix is empty after applying date/universe filter")
 
         # 2. Drop dates with >50% NaN — applies to both halves identically
         nan_frac = alpha.isna().sum(axis=1) / len(alpha.columns)
         alpha = alpha.loc[nan_frac <= 0.5]
 
         if alpha.empty:
-            raise ValueError(
-                "All dates dropped: every row had >50% NaN alpha"
-            )
+            raise ValueError("All dates dropped: every row had >50% NaN alpha")
 
         if not config.run_oos:
             return self._run_pipeline(alpha, config), None
@@ -173,9 +164,7 @@ class Backtester:
     # the >50%-NaN-row drop.
     # ------------------------------------------------------------------
 
-    def _run_pipeline(
-        self, alpha: pd.DataFrame, config: SimulationConfig
-    ) -> BacktestResult:
+    def _run_pipeline(self, alpha: pd.DataFrame, config: SimulationConfig) -> BacktestResult:
         if alpha.empty:
             raise ValueError("Empty alpha slice passed to pipeline")
 
@@ -183,9 +172,7 @@ class Backtester:
         # ticker wasn't yet an S&P 100 member on date.  Done before decay/
         # neutralization so the masked entries don't leak through rolling ops.
         if config.point_in_time_universe:
-            mask = build_membership_mask(
-                pd.DatetimeIndex(alpha.index), list(alpha.columns)
-            )
+            mask = build_membership_mask(pd.DatetimeIndex(alpha.index), list(alpha.columns))
             alpha = alpha.where(mask, other=0.0)
 
         # Optional decay before trading
@@ -211,9 +198,7 @@ class Backtester:
         # capturing the "we couldn't trade at the close we just saw" friction.
         if "returns" not in self.data:
             raise ValueError("data['returns'] is required to compute PnL")
-        returns = self.data["returns"].reindex(
-            index=positions.index, columns=positions.columns
-        )
+        returns = self.data["returns"].reindex(index=positions.index, columns=positions.columns)
         exec_lag = max(1, int(config.execution_lag_days))
         stock_pnl = positions.shift(exec_lag) * returns
         gross_pnl = stock_pnl.sum(axis=1, skipna=True)
@@ -227,19 +212,16 @@ class Backtester:
             dv = self.data.get("dollar_volume")
             rv = self.data.get("realized_vol")
             if dv is not None and rv is not None and not dv.empty and not rv.empty:
-                dv_aligned = dv.reindex(
-                    index=positions.index, columns=positions.columns
-                ).replace(0, np.nan)
-                rv_aligned = rv.reindex(
-                    index=positions.index, columns=positions.columns
-                ).fillna(0.0)
+                dv_aligned = dv.reindex(index=positions.index, columns=positions.columns).replace(
+                    0, np.nan
+                )
+                rv_aligned = rv.reindex(index=positions.index, columns=positions.columns).fillna(
+                    0.0
+                )
                 participation = (delta_pos / dv_aligned).fillna(0.0).clip(lower=0.0)
                 # impact_$ = c · σ · |trade$| · √(participation)
                 impact_per_stock = (
-                    config.impact_coefficient
-                    * rv_aligned
-                    * delta_pos
-                    * participation.pow(0.5)
+                    config.impact_coefficient * rv_aligned * delta_pos * participation.pow(0.5)
                 )
                 cost_per_stock = flat_cost_per_stock + impact_per_stock
             else:
@@ -274,9 +256,7 @@ class Backtester:
     # the split forward in time removes that luck.
     # ------------------------------------------------------------------
 
-    def walk_forward(
-        self, alpha_matrix: pd.DataFrame, config: SimulationConfig
-    ) -> list[dict]:
+    def walk_forward(self, alpha_matrix: pd.DataFrame, config: SimulationConfig) -> list[dict]:
         """Slide a (train_days → test_days) window across the full history.
 
         Returns one dict per window: {train/test period, train Sharpe, test
@@ -321,20 +301,22 @@ class Backtester:
             train_sharpe = _quick_sharpe(train_res.daily_returns)
             test_sharpe = _quick_sharpe(test_res.daily_returns)
 
-            results.append({
-                "train_start": train_slice.index[0].strftime("%Y-%m-%d"),
-                "train_end": train_slice.index[-1].strftime("%Y-%m-%d"),
-                "test_start": test_slice.index[0].strftime("%Y-%m-%d"),
-                "test_end": test_slice.index[-1].strftime("%Y-%m-%d"),
-                "train_sharpe": train_sharpe,
-                "test_sharpe": test_sharpe,
-                "test_total_return": float(
-                    sum(x for x in test_res.daily_returns if x is not None)
-                ),
-                "test_cumulative_pnl": float(
-                    test_res.cumulative_pnl[-1] if test_res.cumulative_pnl else 0.0
-                ),
-            })
+            results.append(
+                {
+                    "train_start": train_slice.index[0].strftime("%Y-%m-%d"),
+                    "train_end": train_slice.index[-1].strftime("%Y-%m-%d"),
+                    "test_start": test_slice.index[0].strftime("%Y-%m-%d"),
+                    "test_end": test_slice.index[-1].strftime("%Y-%m-%d"),
+                    "train_sharpe": train_sharpe,
+                    "test_sharpe": test_sharpe,
+                    "test_total_return": float(
+                        sum(x for x in test_res.daily_returns if x is not None)
+                    ),
+                    "test_cumulative_pnl": float(
+                        test_res.cumulative_pnl[-1] if test_res.cumulative_pnl else 0.0
+                    ),
+                }
+            )
             cursor += step
 
         return results
@@ -360,6 +342,7 @@ class Backtester:
         absent from the GICS map entirely) are bucketed together as
         ``"Unknown"`` — better than silently dropping them.
         """
+
         # The legacy `sector` path used `sector_map`; the GICS-aware paths use
         # `gics_map`.  When both are present, gics_map wins (it's the strictly
         # richer source).

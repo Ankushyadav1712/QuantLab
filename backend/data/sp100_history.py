@@ -47,9 +47,7 @@ def is_member_on(ticker: str, date: pd.Timestamp) -> bool:
     return date >= pd.to_datetime(join)
 
 
-def build_membership_mask(
-    dates: pd.DatetimeIndex, tickers: list[str]
-) -> pd.DataFrame:
+def build_membership_mask(dates: pd.DatetimeIndex, tickers: list[str]) -> pd.DataFrame:
     """Return a (dates × tickers) bool DataFrame: True where ticker is a member.
 
     Used by the backtester to mask out anachronistic positions when
@@ -64,9 +62,7 @@ def build_membership_mask(
     return mask
 
 
-def membership_summary(
-    dates: pd.DatetimeIndex, tickers: list[str]
-) -> dict:
+def membership_summary(dates: pd.DatetimeIndex, tickers: list[str]) -> dict:
     """Diagnostic summary the API can surface in the data-quality banner."""
     affected: list[dict] = []
     for t in tickers:

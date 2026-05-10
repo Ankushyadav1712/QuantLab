@@ -25,7 +25,6 @@ from data.fetcher import DataFetcher
 from engine.backtester import Backtester, SimulationConfig
 from engine.evaluator import AlphaEvaluator
 
-
 EXPRESSIONS = [
     "rank(delta(close, 5))",
     "rank(volume) * rank(returns)",
@@ -52,10 +51,7 @@ def main() -> int:
     backtester = Backtester(data, SECTOR_MAP)
     analytics = PerformanceAnalytics()
 
-    header = (
-        f"{'Expression':<46} "
-        f"{'Sharpe':>8} {'AnnRet':>8} {'MaxDD':>8} {'Fitness':>8}"
-    )
+    header = f"{'Expression':<46} {'Sharpe':>8} {'AnnRet':>8} {'MaxDD':>8} {'Fitness':>8}"
     print(header)
     print("-" * len(header))
 

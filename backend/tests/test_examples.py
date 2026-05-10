@@ -8,20 +8,25 @@ at CI time instead of at "user clicks Load Example."
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
-
 from data.example_alphas import EXAMPLE_ALPHAS, get_example, list_examples
 from engine.lint import lint_ast
 from engine.parser import Parser
+from fastapi.testclient import TestClient
 from main import app
-
 
 # ---------- Catalog shape ----------
 
 
 def test_examples_have_required_fields():
-    required = {"id", "name", "category", "expression", "description",
-                "recommended_settings", "teaches"}
+    required = {
+        "id",
+        "name",
+        "category",
+        "expression",
+        "description",
+        "recommended_settings",
+        "teaches",
+    }
     for e in EXAMPLE_ALPHAS:
         missing = required - set(e.keys())
         assert not missing, f"Example {e.get('id', '?')} missing fields: {missing}"
@@ -35,9 +40,20 @@ def test_example_ids_unique():
 def test_example_settings_use_known_keys():
     """Recommended settings must be keys the simulate endpoint understands —
     typos would silently no-op when applied."""
-    known = {"neutralization", "decay", "transaction_cost_bps", "booksize",
-             "truncation", "start_date", "end_date", "run_oos", "cost_model",
-             "impact_coefficient", "execution_lag_days", "point_in_time_universe"}
+    known = {
+        "neutralization",
+        "decay",
+        "transaction_cost_bps",
+        "booksize",
+        "truncation",
+        "start_date",
+        "end_date",
+        "run_oos",
+        "cost_model",
+        "impact_coefficient",
+        "execution_lag_days",
+        "point_in_time_universe",
+    }
     for e in EXAMPLE_ALPHAS:
         unknown = set(e["recommended_settings"].keys()) - known
         assert not unknown, f"Example {e['id']} has unknown setting keys: {unknown}"
@@ -53,8 +69,7 @@ def test_every_example_parses():
         try:
             parser.parse(e["expression"])
         except ValueError as exc:
-            pytest.fail(f"Example {e['id']} fails to parse: {exc}\n"
-                        f"  Expression: {e['expression']}")
+            pytest.fail(f"Example {e['id']} fails to parse: {exc}\n  Expression: {e['expression']}")
 
 
 def test_every_example_lints_clean():

@@ -4,15 +4,14 @@ import pandas as pd
 
 from engine import operators as ops
 from engine.parser import (
+    DATA_FIELD_ALIASES,
     BinaryOp,
     DataField,
-    DATA_FIELD_ALIASES,
     FunctionCall,
     Literal,
     Parser,
     UnaryOp,
 )
-
 
 _FUNCTION_NAME_REMAP = {
     "abs": "op_abs",
@@ -62,8 +61,7 @@ class AlphaEvaluator:
             actual = DATA_FIELD_ALIASES.get(node.name, node.name)
             if actual not in self.data:
                 raise ValueError(
-                    f"Unknown data field: {node.name!r} "
-                    f"(available: {sorted(self.data.keys())})"
+                    f"Unknown data field: {node.name!r} (available: {sorted(self.data.keys())})"
                 )
             return self.data[actual]
 

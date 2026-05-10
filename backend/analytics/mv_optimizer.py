@@ -50,9 +50,7 @@ def inverse_variance(returns: pd.DataFrame) -> np.ndarray:
     return inv_var / inv_var.sum()
 
 
-def mv_optimal(
-    returns: pd.DataFrame, target_vol: float | None = None
-) -> np.ndarray:
+def mv_optimal(returns: pd.DataFrame, target_vol: float | None = None) -> np.ndarray:
     """Closed-form mean-variance tangency portfolio: w = Σ⁻¹ μ, normalized.
 
     No non-negativity constraint — the result may include shorts.  This is
@@ -95,9 +93,7 @@ def mv_optimal(
     return raw / s
 
 
-def risk_parity(
-    returns: pd.DataFrame, max_iter: int = 200, tol: float = 1e-8
-) -> np.ndarray:
+def risk_parity(returns: pd.DataFrame, max_iter: int = 200, tol: float = 1e-8) -> np.ndarray:
     """Equal-risk-contribution weights: each alpha contributes the same to
     portfolio variance.  Iterative; converges quickly for well-behaved cov.
 
@@ -116,7 +112,7 @@ def risk_parity(
     sigma = np.sqrt(np.diag(cov))
     if not np.all(np.isfinite(sigma)) or np.any(sigma <= 0):
         return equal_weights(n)
-    w = (1.0 / sigma)
+    w = 1.0 / sigma
     w = w / w.sum()
 
     target = 1.0 / n
@@ -159,7 +155,4 @@ def compute_weights(
         return mv_optimal(returns, target_vol=target_vol)
     if method == "risk_parity":
         return risk_parity(returns)
-    raise ValueError(
-        f"Unknown weight method: {method!r}. "
-        f"Known: {sorted(WEIGHT_METHODS.keys())}"
-    )
+    raise ValueError(f"Unknown weight method: {method!r}. Known: {sorted(WEIGHT_METHODS.keys())}")
