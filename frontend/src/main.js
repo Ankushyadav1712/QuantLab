@@ -6,7 +6,9 @@ import { createEditor } from './components/editor.js';
 import { createDashboard } from './components/dashboard.js';
 import { createCharts } from './components/charts.js';
 import { createSidebar } from './components/sidebar.js';
+import { createComparison } from './components/comparison.js';
 import { createCorrelation } from './components/correlation.js';
+import { createSweepResults } from './components/sweep.js';
 import { toast } from './ui/toast.js';
 
 // ---------- Layout ----------
@@ -38,8 +40,10 @@ root.innerHTML = `
     <aside id="sidebar"></aside>
     <main class="main">
       <section id="editor"></section>
+      <section id="sweep"></section>
       <section id="dashboard"></section>
       <section id="charts"></section>
+      <section id="comparison"></section>
       <section id="correlation"></section>
     </main>
   </div>
@@ -50,6 +54,8 @@ const dashboard = createDashboard(document.getElementById('dashboard'));
 const charts = createCharts(document.getElementById('charts'));
 const sidebar = createSidebar(document.getElementById('sidebar'));
 const correlation = createCorrelation(document.getElementById('correlation'));
+const comparison = createComparison(document.getElementById('comparison'));
+const sweep = createSweepResults(document.getElementById('sweep'));
 
 // ---------- State ----------
 
@@ -84,11 +90,28 @@ editor.setOnRun(async () => {
     return;
   }
   const settings = editor.getSettings();
+
+  // Sweep mode short-circuits the regular simulate path: run the parameter
+  // grid and render the heatmap, but don't touch the dashboard / charts /
+  // save button (those reflect a single backtest).
+  if (editor.getIsSweep()) {
+    try {
+      const resp = await api.sweep(expression, settings, 50);
+      sweep.render(resp);
+      document.getElementById('sweep').scrollIntoView({ behavior: 'smooth' });
+      toast(`Sweep complete · ${resp.n_combinations} backtests`, 'success', { duration: 2500 });
+    } catch (e) {
+      toast(e.message, 'error', { title: 'Sweep failed', duration: 8000 });
+    }
+    return;
+  }
+
   const n_trials = recordExpressionTrial(expression);
   try {
     const resp = await api.simulate(expression, settings, n_trials);
     renderResponse(resp);
     editor.setSaveEnabled(true);
+    sweep.clear();
     toast('Backtest complete', 'success', { duration: 2500 });
   } catch (e) {
     toast(e.message, 'error', { title: 'Simulation failed', duration: 8000 });
@@ -99,6 +122,114 @@ editor.setOnSave(() => {
   if (!lastResponse) return;
   openSaveModal(lastResponse);
 });
+
+editor.setOnLoadExample(() => {
+  openExamplePicker();
+});
+
+// ---------- Example picker modal ----------
+// Lazy-loads /api/examples on first open and caches in-module.  Renders a
+// grouped list (one section per category) with name + description + tags.
+// Selecting an example pastes the expression into the editor and applies
+// the recommended settings.
+let _exampleCache = null;
+async function openExamplePicker() {
+  let examples = _exampleCache;
+  if (examples == null) {
+    try {
+      const resp = await api.getExamples();
+      examples = resp.examples || [];
+      _exampleCache = examples;
+    } catch (e) {
+      toast(e.message, 'error', { title: 'Could not load examples' });
+      return;
+    }
+  }
+
+  // Group by category, preserving first-appearance order
+  const byCat = new Map();
+  for (const ex of examples) {
+    if (!byCat.has(ex.category)) byCat.set(ex.category, []);
+    byCat.get(ex.category).push(ex);
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'modal modal-examples glass';
+
+  const sections = [...byCat.entries()].map(([cat, items]) => {
+    const cards = items.map((ex) => `
+      <div class="example-card" data-example-id="${ex.id}" tabindex="0">
+        <div class="example-card-head">
+          <strong class="example-name">${escapeHtml(ex.name)}</strong>
+          <code class="example-expr">${escapeHtml(ex.expression)}</code>
+        </div>
+        <p class="example-desc">${escapeHtml(ex.description)}</p>
+        <div class="example-tags">
+          ${(ex.teaches || []).map((t) => `<span class="example-tag">${escapeHtml(t)}</span>`).join('')}
+        </div>
+      </div>
+    `).join('');
+    return `
+      <div class="example-section">
+        <div class="example-cat">${escapeHtml(cat)}</div>
+        <div class="example-grid">${cards}</div>
+      </div>
+    `;
+  }).join('');
+
+  modal.innerHTML = `
+    <div class="modal-head">
+      <h2>Load an example alpha</h2>
+      <button type="button" class="modal-close" aria-label="Close">×</button>
+    </div>
+    <p class="modal-sub">
+      Click an example to paste it into the editor with the recommended settings.
+      You can edit before running.
+    </p>
+    <div class="example-sections">${sections}</div>
+  `;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  modal.querySelector('.modal-close').addEventListener('click', close);
+  document.addEventListener('keydown', function onKey(e) {
+    if (e.key === 'Escape') {
+      document.removeEventListener('keydown', onKey);
+      close();
+    }
+  });
+
+  // Click handler delegated on the cards
+  modal.querySelectorAll('.example-card').forEach((card) => {
+    const apply = () => {
+      const id = card.dataset.exampleId;
+      const ex = examples.find((e) => e.id === id);
+      if (!ex) return;
+      editor.setExpression(ex.expression);
+      editor.applySettings(ex.recommended_settings || {});
+      toast(`Loaded: ${ex.name}`, 'success', { duration: 2500 });
+      close();
+    };
+    card.addEventListener('click', apply);
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        apply();
+      }
+    });
+  });
+}
+
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 // ---------- Sidebar wiring ----------
 
@@ -117,19 +248,104 @@ sidebar.setOnLoad(async (id) => {
 
 sidebar.setOnBlend(async (items) => {
   if (!items || items.length === 0) return;
+
+  // Ask the user which weight method to use.  "equal" preserves the existing
+  // user-supplied weights; everything else ignores them and uses the optimizer.
+  const choice = await openWeightMethodPicker();
+  if (!choice) return;  // user cancelled
+
   const settings = editor.getSettings();
   try {
     const resp = await api.multiBlend(
       items.map(({ expression, weight }) => ({ expression, weight })),
-      settings
+      settings,
+      choice.method,
+      choice.target_vol,
     );
     renderResponse(resp);
+    // Use the *computed* weights from the response so the editor's preview
+    // matches what was actually run.
+    const computed = (resp.settings?.alphas) || items.map((i) => ({ expression: i.expression, weight: i.weight }));
     editor.setExpression(
-      items.map((i) => `${i.weight.toFixed(2)} * (${i.expression})`).join(' + ')
+      computed.map((i) => `${i.weight.toFixed(3)} * (${i.expression})`).join(' + ')
     );
     editor.setSaveEnabled(true);
+    const methodLabel = resp.settings?.weight_method || choice.method;
+    toast(`Blended ${items.length} alphas (${methodLabel})`, 'success', { duration: 2500 });
   } catch (e) {
     toast(e.message, 'error', { title: 'Multi-blend failed' });
+  }
+});
+
+// Small modal for picking the weighting method before running multi-blend.
+// Returns {method, target_vol} or null if cancelled.
+function openWeightMethodPicker() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'modal modal-confirm glass';
+    modal.innerHTML = `
+      <h2>Blend method</h2>
+      <p class="confirm-message">How should we weight the selected alphas?</p>
+      <div class="weight-method-options">
+        <label><input type="radio" name="wm" value="equal" checked /> <strong>Equal</strong> — use the weights from the sidebar inputs</label>
+        <label><input type="radio" name="wm" value="inverse_variance" /> <strong>Inverse-variance</strong> — robust, ignores correlations</label>
+        <label><input type="radio" name="wm" value="mv_optimal" /> <strong>Mean-variance optimal</strong> — closed-form Σ⁻¹μ; may produce shorts</label>
+        <label><input type="radio" name="wm" value="risk_parity" /> <strong>Risk parity</strong> — equal vol contribution per alpha</label>
+      </div>
+      <label class="weight-target-vol" style="display:none;">
+        Target annualized vol (optional, mv_optimal only):
+        <input type="number" step="0.01" min="0" placeholder="e.g. 0.15" data-role="target-vol" />
+      </label>
+      <div class="modal-actions">
+        <button type="button" data-role="cancel">Cancel</button>
+        <button type="button" data-role="confirm" class="primary">Run blend</button>
+      </div>
+    `;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    const targetVolBlock = modal.querySelector('.weight-target-vol');
+    const targetVolInput = modal.querySelector('[data-role="target-vol"]');
+    modal.querySelectorAll('input[name="wm"]').forEach((r) => {
+      r.addEventListener('change', () => {
+        const v = modal.querySelector('input[name="wm"]:checked')?.value;
+        targetVolBlock.style.display = v === 'mv_optimal' ? '' : 'none';
+      });
+    });
+
+    const close = (value) => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+      resolve(value);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') close(null); };
+    document.addEventListener('keydown', onKey);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    modal.querySelector('[data-role="cancel"]').addEventListener('click', () => close(null));
+    modal.querySelector('[data-role="confirm"]').addEventListener('click', () => {
+      const method = modal.querySelector('input[name="wm"]:checked')?.value || 'equal';
+      const tvRaw = targetVolInput.value.trim();
+      const target_vol = method === 'mv_optimal' && tvRaw !== '' ? Number(tvRaw) : null;
+      close({ method, target_vol });
+    });
+  });
+}
+
+sidebar.setOnCompare(async (items) => {
+  if (!items || items.length < 2 || items.length > 4) return;
+  const settings = editor.getSettings();
+  try {
+    const resp = await api.compare(
+      items.map((i) => i.expression),
+      settings,
+    );
+    comparison.render(resp);
+    document.getElementById('comparison').scrollIntoView({ behavior: 'smooth' });
+    toast(`Compared ${items.length} alphas`, 'success', { duration: 2500 });
+  } catch (e) {
+    toast(e.message, 'error', { title: 'Compare failed' });
   }
 });
 

@@ -51,11 +51,18 @@ export const api = {
   listAlphas: () => request('GET', '/api/alphas'),
   getAlpha: (id) => request('GET', `/api/alphas/${id}`),
   deleteAlpha: (id) => request('DELETE', `/api/alphas/${id}`, undefined, { auth: true }),
-  multiBlend: (alphas, settings = {}) =>
-    request('POST', '/api/alphas/multi-blend', { alphas, settings }),
+  multiBlend: (alphas, settings = {}, weight_method = 'equal', target_vol = null) =>
+    request('POST', '/api/alphas/multi-blend', {
+      alphas, settings, weight_method, target_vol,
+    }),
+  compare: (expressions, settings = {}) =>
+    request('POST', '/api/compare', { expressions, settings }),
+  sweep: (expression, settings = {}, max_combinations = 50) =>
+    request('POST', '/api/sweep', { expression, settings, max_combinations }),
   getCorrelations: (ids) =>
     request('POST', '/api/alphas/correlations', { alpha_ids: ids }),
   getOperators: () => request('GET', '/api/operators'),
   getUniverse: () => request('GET', '/api/universe'),
   getUniverses: () => request('GET', '/api/universes'),
+  getExamples: () => request('GET', '/api/examples'),
 };
