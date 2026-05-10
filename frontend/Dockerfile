@@ -1,7 +1,7 @@
 # ---------- stage 1: build the Vite bundle ----------
 # Vite 8 (already pinned in package.json) requires Node >=20.19, so we use
 # node:20-alpine instead of the 18-alpine the original spec called for.
-FROM node:20-alpine AS builder
+FROM node:26-alpine AS builder
 
 WORKDIR /app
 
