@@ -1,0 +1,26 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    "backend/data/cache",
+    "backend/__pycache__",
+    "**/__pycache__",
+    ".venv",
+]
+
+[tool.ruff.lint]
+# Start conservative: pyflakes (F) catches real bugs (unused imports,
+# undefined names), pycodestyle errors (E), and import sorting (I).
+# Add B (bugbear), UP (pyupgrade), SIM (simplify) once the codebase is clean.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # line-too-long — formatter handles, noisy on long expressions/URLs
+    "E741",  # ambiguous variable name — common in math code (l, I, O)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/*" = ["F401", "F811"]  # fixtures often look unused / re-imported
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
