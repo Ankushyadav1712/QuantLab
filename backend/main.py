@@ -1405,6 +1405,7 @@ def _build_response(
         oos_metrics, oos_timeseries, oos_monthly = _compute_perf_pack(
             oos_result, perf, spy=spy, n_trials=1
         )
+        assert oos_metrics is not None  # narrow Optional for mypy
         overfitting = perf.compare_is_oos(is_metrics, oos_metrics)
         # Combined monthly-returns heatmap spans both halves
         monthly_returns = is_monthly + oos_monthly
@@ -2108,7 +2109,7 @@ def data_preview(ticker: str):
     last30 = last30.reset_index().rename(columns={"index": "date"})
     rows: list[dict[str, Any]] = []
     for record in last30.to_dict(orient="records"):
-        clean = {}
+        clean: dict[str, Any] = {}
         for k, v in record.items():
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 clean[k] = None

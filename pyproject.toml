@@ -27,3 +27,52 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+# ----------------------------------------------------------------------
+# Coverage — exclude the data fetchers and scripts (network-bound, hard
+# to unit-test in isolation) so the % reflects testable surface area.
+# ----------------------------------------------------------------------
+[tool.coverage.run]
+source = ["backend"]
+omit = [
+    "backend/scripts/*",
+    "backend/tests/*",
+    "backend/data/cache/*",
+    "backend/__pycache__/*",
+    "backend/conftest.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+show_missing = true
+precision = 1
+
+# ----------------------------------------------------------------------
+# mypy — start lenient. The codebase has never been type-checked, so
+# strict mode would surface hundreds of issues. This config catches real
+# bugs (undefined names, wrong arg counts) without forcing every function
+# to be annotated. Tighten over time by enabling more strictness flags.
+# ----------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "backend"
+explicit_package_bases = true
+namespace_packages = true
+ignore_missing_imports = true       # pandas/numpy/yfinance lack stubs
+check_untyped_defs = false          # don't recurse into unannotated funcs
+disallow_untyped_defs = false       # don't require annotations yet
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+exclude = [
+    "backend/scripts/",
+    "backend/data/cache/",
+    "backend/tests/",
+    "backend/__pycache__/",
+]
