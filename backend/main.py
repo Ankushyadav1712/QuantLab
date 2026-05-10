@@ -33,6 +33,7 @@ from config import (
 )
 from data.factors import download_ff5_daily
 from data.fetcher import ALL_FIELDS, DataFetcher
+from data.example_alphas import get_example, list_examples
 from data.fundamentals import (
     ALL_FUNDAMENTAL_FIELDS,
     LAG_QUARTERS,
@@ -61,11 +62,14 @@ from engine.backtester import Backtester, SimulationConfig
 from engine.evaluator import AlphaEvaluator
 from engine.lint import lint_ast
 from engine.parser import Parser
+from engine.sweep import combo_for_index, expand_sweeps
 from models.schemas import (
     AlphaSaveRequest,
+    CompareRequest,
     CorrelationRequest,
     MultiAlphaRequest,
     SimulationRequest,
+    SweepRequest,
     ValidateRequest,
 )
 
@@ -141,6 +145,11 @@ OPERATORS = [
     {"name": "replace", "args": "(x, old, new)", "category": "arithmetic", "description": "Replace cells equal to `old` with `new`"},
     {"name": "isnan", "args": "(x)", "category": "arithmetic", "description": "1.0 where cell is NaN, else 0.0"},
     {"name": "equal", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise equality indicator (0/1)"},
+    {"name": "less", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x < y; returns 1.0 / 0.0"},
+    {"name": "greater", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x > y; returns 1.0 / 0.0"},
+    {"name": "less_eq", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x <= y; returns 1.0 / 0.0"},
+    {"name": "greater_eq", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x >= y; returns 1.0 / 0.0"},
+    {"name": "not_equal", "args": "(x, y)", "category": "arithmetic", "description": "Element-wise x != y; returns 1.0 / 0.0"},
     # ----- Conditional / state -----
     {"name": "if_else", "args": "(cond, x, y)", "category": "conditional", "description": "Element-wise conditional"},
     {"name": "where", "args": "(cond, x, y)", "category": "conditional", "description": "Alias for if_else with truthy cond"},
@@ -845,6 +854,26 @@ def get_default_universe():
     return {"tickers": list(default["tickers"]), "sectors": sectors}
 
 
+@app.get("/api/examples")
+def get_examples():
+    """Curated alpha expressions for the Load Example dropdown.
+
+    Each entry is self-contained: the frontend can paste the expression into
+    the editor and apply ``recommended_settings`` without further negotiation.
+    """
+    return {"examples": list_examples()}
+
+
+@app.get("/api/examples/{example_id}")
+def get_example_by_id(example_id: str):
+    """Single example lookup — useful if the frontend wants to deep-link
+    to a specific alpha (e.g. via URL query param)."""
+    e = get_example(example_id)
+    if e is None:
+        raise HTTPException(status_code=404, detail=f"Unknown example: {example_id!r}")
+    return e
+
+
 @app.get("/api/universes")
 def get_universes():
     """All built-in universes + which neutralization modes each one supports.
@@ -948,6 +977,134 @@ def simulate(request: Request, req: SimulationRequest):
     return response
 
 
+@app.post("/api/sweep")
+@limiter.limit(_LIMIT_SIMULATE)
+def sweep(request: Request, req: SweepRequest):
+    """Parameter-sweep variant of /api/simulate.
+
+    Expands ``{a..b(:s)?}`` tokens into a cartesian product of expressions,
+    runs each through the existing pipeline (IS-only), and returns a flat
+    grid of summary metrics the frontend renders as a heatmap or table.
+    """
+    del request  # required-by-name for slowapi
+    try:
+        expansion = expand_sweeps(req.expression, max_combinations=req.max_combinations)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Sweep error: {e}")
+
+    cfg = _make_config(req.settings, run_oos=False)
+    bt = Backtester(_state["data"], SECTOR_MAP)
+    perf = PerformanceAnalytics()
+    spy = _state.get("spy_returns")
+
+    cells: list[dict[str, Any]] = []
+    for i, expr in enumerate(expansion["expressions"]):
+        params = combo_for_index(i, expansion)
+        try:
+            ast = Parser().parse(expr)
+            errors = [d for d in lint_ast(ast) if d["severity"] == "error"]
+            if errors:
+                cells.append({
+                    "expression": expr,
+                    "params": params,
+                    "error": errors[0]["message"],
+                })
+                continue
+
+            alpha = _evaluate(expr)
+            is_result, _ = bt.run(alpha, cfg)
+            metrics, _, _ = _compute_perf_pack(is_result, perf, spy=spy, n_trials=1)
+        except (ValueError, HTTPException) as exc:
+            cells.append({
+                "expression": expr,
+                "params": params,
+                "error": str(getattr(exc, "detail", exc)),
+            })
+            continue
+
+        cells.append({
+            "expression": expr,
+            "params": params,
+            "sharpe": metrics.get("sharpe"),
+            "annual_return": metrics.get("annual_return"),
+            "max_drawdown": metrics.get("max_drawdown"),
+            "fitness": metrics.get("fitness"),
+            "avg_turnover": metrics.get("avg_turnover"),
+        })
+
+    return {
+        "expression": req.expression,
+        "dimensions": expansion["dimensions"],
+        "cells": cells,
+        "n_combinations": expansion["total"],
+        "settings": _config_to_dict(cfg),
+    }
+
+
+@app.post("/api/compare")
+@limiter.limit(_LIMIT_SIMULATE)
+def compare_alphas(request: Request, req: CompareRequest):
+    """Run 2-4 expressions through the IS-only pipeline and return them all
+    overlaid for visual comparison.
+
+    Each expression is evaluated independently (no blending, no shared state).
+    The frontend overlays the equity / drawdown / rolling-Sharpe series on the
+    same axes and presents the metrics side-by-side.
+
+    No OOS, walk-forward, or factor-decomp here — keeping the response under
+    a few seconds even with 4 alphas.  If a user wants validation on a
+    winner, they should run it through /api/simulate separately.
+    """
+    del request  # required-by-name for slowapi
+
+    cfg = _make_config(req.settings, run_oos=False)
+    bt = Backtester(_state["data"], SECTOR_MAP)
+    perf = PerformanceAnalytics()
+    spy = _state.get("spy_returns")
+
+    labels = ["A", "B", "C", "D"]
+    out_alphas: list[dict[str, Any]] = []
+
+    for i, expr in enumerate(req.expressions):
+        # Per-expression lint — surface look-ahead errors per cell so the user
+        # knows which one is bad rather than failing the whole compare run.
+        try:
+            ast = Parser().parse(expr)
+            errors = [d for d in lint_ast(ast) if d["severity"] == "error"]
+            if errors:
+                out_alphas.append({
+                    "label": labels[i],
+                    "expression": expr,
+                    "error": errors[0]["message"],
+                })
+                continue
+
+            alpha_matrix = _evaluate(expr)
+            is_result, _ = bt.run(alpha_matrix, cfg)
+            metrics, timeseries, _ = _compute_perf_pack(
+                is_result, perf, spy=spy, n_trials=req.n_trials,
+            )
+        except (ValueError, HTTPException) as exc:
+            out_alphas.append({
+                "label": labels[i],
+                "expression": expr,
+                "error": str(getattr(exc, "detail", exc)),
+            })
+            continue
+
+        out_alphas.append({
+            "label": labels[i],
+            "expression": expr,
+            "metrics": metrics,
+            "timeseries": timeseries,
+        })
+
+    return {
+        "alphas": out_alphas,
+        "settings": _config_to_dict(cfg),
+    }
+
+
 @app.post("/api/alphas/multi-blend")
 @limiter.limit(_LIMIT_SIMULATE)
 def multi_blend(request: Request, req: MultiAlphaRequest):
@@ -955,30 +1112,77 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
     if not req.alphas:
         raise HTTPException(status_code=400, detail="No alphas provided")
 
-    raw_weights = np.array([float(a.get("weight", 1.0)) for a in req.alphas])
-    total = float(np.abs(raw_weights).sum())
-    if total == 0:
-        raise HTTPException(status_code=400, detail="Weights sum to zero")
-    weights = raw_weights / total
-
-    combined: pd.DataFrame | None = None
-    items: list[dict[str, Any]] = []
-    for w, item in zip(weights, req.alphas):
+    expressions: list[str] = []
+    for item in req.alphas:
         expr = item.get("expression")
         if not expr:
             raise HTTPException(status_code=400, detail="Each alpha needs an 'expression'")
+        expressions.append(expr)
+
+    # Evaluate every expression once.  We need each alpha's per-day return
+    # series for the optimizer (cov-matrix estimation), and we need the alpha
+    # matrix itself for the final weighted blend.  Doing both in one pass
+    # avoids re-evaluating in two endpoints.
+    cfg = _make_config(req.settings)
+    _, gics_map, universe_id = _resolve_universe(req.settings or {})
+    bt = Backtester(_state["data"], SECTOR_MAP)
+    alpha_matrices: list[pd.DataFrame] = []
+    return_series: list[pd.Series] = []
+    for expr in expressions:
         matrix = _evaluate(expr)
+        alpha_matrices.append(matrix)
+        # Standalone IS-only run to get the per-day return series for the optimizer.
+        # Cheap relative to the full pipeline; OOS isn't needed here.
+        try:
+            standalone_cfg = _make_config({**(req.settings or {}), "run_oos": False})
+            is_result, _ = bt.run(matrix, standalone_cfg)
+            return_series.append(
+                pd.Series(is_result.daily_returns, index=pd.to_datetime(is_result.dates))
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Standalone backtest failed for {expr!r}: {exc}"
+            )
+
+    # Compute weights via the chosen method.  user_weights are only used when
+    # weight_method == "equal" — but we treat equal as "user-supplied weights"
+    # (the existing semantics) so people can still hand-pick weights.
+    if req.weight_method == "equal":
+        raw_weights = np.array([float(a.get("weight", 1.0)) for a in req.alphas])
+        total = float(np.abs(raw_weights).sum())
+        if total == 0:
+            raise HTTPException(status_code=400, detail="Weights sum to zero")
+        computed = raw_weights / total
+        weight_method_used = "equal_user_supplied"
+    else:
+        try:
+            from analytics.mv_optimizer import compute_weights
+            returns_df = pd.concat(return_series, axis=1).dropna(how="any")
+            if returns_df.empty:
+                raise ValueError("All alphas had empty return series after alignment")
+            computed = compute_weights(
+                req.weight_method, returns_df, target_vol=req.target_vol
+            )
+            weight_method_used = req.weight_method
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    # Build the weighted blend
+    items: list[dict[str, Any]] = []
+    combined: pd.DataFrame | None = None
+    for w, expr, matrix in zip(computed, expressions, alpha_matrices):
         items.append({"expression": expr, "weight": float(w)})
         weighted = matrix * float(w)
         combined = weighted if combined is None else combined.add(weighted, fill_value=0.0)
 
-    cfg = _make_config(req.settings)
-    _, gics_map, universe_id = _resolve_universe(req.settings or {})
     response = _build_response(
         "multi-blend", combined, cfg, gics_map=gics_map, universe_id=universe_id
     )
     response["expression"] = "multi-blend"
     response["settings"]["alphas"] = items
+    response["settings"]["weight_method"] = weight_method_used
+    if req.target_vol is not None:
+        response["settings"]["target_vol"] = req.target_vol
     return response
 
 

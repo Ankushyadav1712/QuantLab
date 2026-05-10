@@ -264,6 +264,55 @@ def test_simulate_with_industry_neutralization(client):
     assert body["settings"]["neutralization"] == "industry"
 
 
+def test_compare_returns_per_alpha_overlay(client):
+    """Two valid alphas should come back with per-alpha labels A/B and the
+    full IS metrics + timeseries each."""
+    r = client.post(
+        "/api/compare",
+        json={
+            "expressions": ["rank(close)", "rank(volume)"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["alphas"]) == 2
+    labels = [a["label"] for a in body["alphas"]]
+    assert labels == ["A", "B"]
+    for a in body["alphas"]:
+        assert "metrics" in a, f"Compare entry has no metrics: {a}"
+        assert "timeseries" in a
+        assert "sharpe" in a["metrics"]
+        # Compare is IS-only, so no overfitting block at the per-alpha level
+        assert "oos_metrics" not in a
+
+
+def test_compare_per_alpha_lint_failure_does_not_kill_others(client):
+    """A look-ahead expression should produce an error for that cell only —
+    the valid expressions must still come back with metrics."""
+    r = client.post(
+        "/api/compare",
+        json={
+            "expressions": ["delay(close, -5)", "rank(close)"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["alphas"]) == 2
+    # First alpha (look-ahead) → error; second → metrics
+    assert "error" in body["alphas"][0]
+    assert "metrics" in body["alphas"][1]
+
+
+def test_compare_rejects_under_two_or_over_four(client):
+    too_few = client.post("/api/compare", json={"expressions": ["rank(close)"]})
+    assert too_few.status_code == 422  # pydantic validation error
+    too_many = client.post(
+        "/api/compare",
+        json={"expressions": ["rank(close)"] * 5},
+    )
+    assert too_many.status_code == 422
+
+
 def test_multi_blend_returns_simulate_shape(client):
     """Multi-blend must produce a full IS/OOS response, same shape as /simulate."""
     r = client.post(

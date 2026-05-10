@@ -15,21 +15,29 @@ export function createSidebar(container) {
     </div>
     <div class="sidebar-actions">
       <button type="button" data-role="blend" disabled>Blend Selected</button>
+      <button type="button" data-role="compare" disabled>Compare Selected</button>
       <button type="button" data-role="correlate" disabled>Show Correlations</button>
     </div>
   `;
 
   const listEl = container.querySelector('[data-role="list"]');
   const blendBtn = container.querySelector('[data-role="blend"]');
+  const compareBtn = container.querySelector('[data-role="compare"]');
   const corrBtn = container.querySelector('[data-role="correlate"]');
 
   let alphas = [];
   let selected = new Set();
   let weights = {}; // id -> number
-  const callbacks = { onLoad: null, onDelete: null, onBlend: null, onCorrelate: null };
+  const callbacks = {
+    onLoad: null, onDelete: null, onBlend: null,
+    onCompare: null, onCorrelate: null,
+  };
 
   blendBtn.addEventListener('click', () => {
     if (callbacks.onBlend) callbacks.onBlend(getSelectedItems());
+  });
+  compareBtn.addEventListener('click', () => {
+    if (callbacks.onCompare) callbacks.onCompare(getSelectedItems());
   });
   corrBtn.addEventListener('click', () => {
     if (callbacks.onCorrelate) callbacks.onCorrelate([...selected]);
@@ -38,6 +46,8 @@ export function createSidebar(container) {
   function updateActionState() {
     const n = selected.size;
     blendBtn.disabled = n < 1;
+    // /api/compare requires 2-4 expressions; the button reflects that range
+    compareBtn.disabled = n < 2 || n > 4;
     corrBtn.disabled = n < 2;
   }
 
@@ -171,6 +181,7 @@ export function createSidebar(container) {
     setOnLoad: (cb) => { callbacks.onLoad = cb; },
     setOnDelete: (cb) => { callbacks.onDelete = cb; },
     setOnBlend: (cb) => { callbacks.onBlend = cb; },
+    setOnCompare: (cb) => { callbacks.onCompare = cb; },
     setOnCorrelate: (cb) => { callbacks.onCorrelate = cb; },
   };
 }

@@ -2,6 +2,14 @@
 // quick-insert buttons, settings panel, and a Run Backtest button.
 
 import { api } from '../api.js';
+import { createAutocomplete } from './autocomplete.js';
+
+// Mirrors backend/engine/sweep.py SWEEP_RE — pure presence check, used to
+// switch the Run button label from "Run Backtest" to "Run Sweep".
+const SWEEP_TOKEN_RE = /\{-?\d+(?:\.\d+)?\.\.-?\d+(?:\.\d+)?(?::-?\d+(?:\.\d+)?)?\}/;
+function detectSweep(text) {
+  return SWEEP_TOKEN_RE.test(text);
+}
 
 const OPERATOR_NAMES = new Set([
   // Time-series (axis=0, per ticker)
@@ -20,7 +28,8 @@ const OPERATOR_NAMES = new Set([
   'group_count', 'group_max', 'group_min', 'group_normalize', 'group_scale',
   // Arithmetic / element-wise
   'abs', 'log', 'exp', 'sqrt', 'mod', 'sign', 'power', 'signed_power',
-  'sigmoid', 'clip', 'max', 'min', 'replace', 'isnan', 'equal',
+  'sigmoid', 'clip', 'max', 'min', 'replace', 'isnan',
+  'equal', 'less', 'greater', 'less_eq', 'greater_eq', 'not_equal',
   // Conditional / state
   'if_else', 'where', 'when', 'mask', 'trade_when', 'keep', 'pasteurize',
 ]);
@@ -112,6 +121,7 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
 
     <div class="editor-actions">
       <button type="button" class="primary" data-role="run">Run Backtest</button>
+      <button type="button" class="ghost" data-role="examples">📚 Load Example</button>
       <button type="button" class="settings-toggle" data-role="settings-toggle">
         <svg class="settings-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3"/>
@@ -306,7 +316,19 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
   textarea.addEventListener('input', () => {
     syncHighlight();
     debouncedValidate();
+    syncRunLabel();
   });
+
+  // Toggle the Run button between "Run Backtest" and "Run Sweep" based on
+  // sweep-token presence.  Live-updates as the user types.  setRunning()
+  // also calls this when restoring the idle state after a run.
+  function syncRunLabel() {
+    const isSweep = detectSweep(textarea.value);
+    runBtn.classList.toggle('is-sweep', isSweep);
+    if (!runBtn.disabled) {
+      runBtn.textContent = isSweep ? 'Run Sweep' : 'Run Backtest';
+    }
+  }
   textarea.addEventListener('scroll', () => {
     highlightEl.scrollTop = textarea.scrollTop;
     highlightEl.scrollLeft = textarea.scrollLeft;
@@ -692,9 +714,14 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
 
   function setRunning(running) {
     runBtn.disabled = running;
-    runBtn.innerHTML = running
-      ? '<span class="spinner"></span> Running…'
-      : 'Run Backtest';
+    if (running) {
+      runBtn.innerHTML = '<span class="spinner"></span> Running…';
+    } else {
+      // Restore the appropriate idle label (sweep vs backtest)
+      const isSweep = detectSweep(textarea.value);
+      runBtn.textContent = isSweep ? 'Run Sweep' : 'Run Backtest';
+      runBtn.classList.toggle('is-sweep', isSweep);
+    }
   }
 
   function getExpression() {
@@ -733,15 +760,94 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     saveBtn.disabled = !enabled;
   }
 
-  // Initial validate
+  // Apply a partial settings dict (e.g. recommended_settings from /api/examples).
+  // Each setting is wired to its actual UI control so the visible state and the
+  // form data both update.  Unknown keys are silently ignored.
+  function applySettings(settings) {
+    if (!settings || typeof settings !== 'object') return;
+    if (typeof settings.start_date === 'string') startInput.value = settings.start_date;
+    if (typeof settings.end_date === 'string') endInput.value = settings.end_date;
+    if (typeof settings.neutralization === 'string') {
+      const target = neutSegmented.querySelector(`button[data-value="${settings.neutralization}"]`);
+      if (target) {
+        neutSegmented.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === target));
+        neutSegmented.dataset.value = settings.neutralization;
+      }
+    }
+    if (typeof settings.decay === 'number') decaySlider.value = String(settings.decay);
+    if (typeof settings.booksize === 'number') booksizeSlider.value = String(Math.round(settings.booksize / 1_000_000));
+    if (typeof settings.truncation === 'number') truncationSlider.value = String(settings.truncation * 100);
+    if (typeof settings.transaction_cost_bps === 'number') costSlider.value = String(settings.transaction_cost_bps);
+    if (typeof settings.run_oos === 'boolean') oosCheckbox.checked = settings.run_oos;
+    if (typeof settings.cost_model === 'string') {
+      const target = costModelSegmented.querySelector(`button[data-value="${settings.cost_model}"]`);
+      if (target) {
+        costModelSegmented.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === target));
+        costModelSegmented.dataset.value = settings.cost_model;
+      }
+    }
+    if (typeof settings.run_walk_forward === 'boolean') wfCheckbox.checked = settings.run_walk_forward;
+    if (typeof settings.execution_lag_days === 'number') t1Checkbox.checked = settings.execution_lag_days >= 2;
+    if (typeof settings.point_in_time_universe === 'boolean') pitCheckbox.checked = settings.point_in_time_universe;
+    // Trigger the slider-label sync helpers if they're in scope (set by sliders' input listeners)
+    decaySlider.dispatchEvent(new Event('input'));
+    booksizeSlider.dispatchEvent(new Event('input'));
+    truncationSlider.dispatchEvent(new Event('input'));
+    costSlider.dispatchEvent(new Event('input'));
+    oosCheckbox.dispatchEvent(new Event('change'));
+  }
+
+  // ---------- Load Example button ----------
+  // Click → ask main.js to open the picker.  main.js resolves the chosen
+  // example, calls back into setExpression + applySettings.
+  let onLoadExample = null;
+  const examplesBtn = container.querySelector('[data-role="examples"]');
+  if (examplesBtn) {
+    examplesBtn.addEventListener('click', () => {
+      if (onLoadExample) onLoadExample();
+    });
+  }
+
+  // Initial validate + run-label sync (in case the seeded expression had sweep tokens)
   debouncedValidate();
+  syncRunLabel();
+
+  // ---------- Autocomplete ----------
+  // Lazy-fetch the full operator + field catalog from /api/operators on init.
+  // Autocomplete only kicks in once the catalog is loaded; before that the
+  // editor still works (highlighting + validation already handle it).
+  api.getOperators()
+    .then((cat) => {
+      const items = [
+        ...(cat.operators || []).map((o) => ({
+          name: o.name,
+          args: o.args,
+          category: o.category || 'operator',
+          description: o.description,
+          kind: 'operator',
+        })),
+        ...(cat.fields || []).map((f) => ({
+          name: f.name,
+          category: f.category || 'field',
+          description: f.description,
+          kind: 'field',
+        })),
+      ];
+      createAutocomplete({ items, textarea });
+    })
+    .catch(() => {
+      // Soft-fail: editor remains functional without autocomplete
+    });
 
   return {
     getExpression,
     setExpression,
     getSettings,
+    applySettings,
+    getIsSweep: () => detectSweep(textarea.value),
     setOnRun: (cb) => { onRun = cb; },
     setOnSave: (cb) => { onSave = cb; },
+    setOnLoadExample: (cb) => { onLoadExample = cb; },
     setSaveEnabled,
     setRunning,
   };

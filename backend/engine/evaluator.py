@@ -26,6 +26,13 @@ _FUNCTION_NAME_REMAP = {
     "sqrt": "op_sqrt",
     "mod": "op_mod",
     "equal": "op_equal",
+    # Comparison operators — return 1.0/0.0 so they compose with arithmetic
+    # and slot into trade_when/when/where as boolean conditions.
+    "less": "op_less",
+    "greater": "op_greater",
+    "less_eq": "op_less_eq",
+    "greater_eq": "op_greater_eq",
+    "not_equal": "op_not_equal",
 }
 
 
