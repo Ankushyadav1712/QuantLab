@@ -650,6 +650,32 @@ def op_equal(x, y):
     return _binary_elementwise(x, y, lambda a, b: np.equal(a, b).astype(float))
 
 
+def op_less(x, y):
+    """Element-wise x < y, returns 1.0 / 0.0.  Composable with arithmetic
+    (you can multiply by it to mask) and with conditional ops (trade_when, when)."""
+    return _binary_elementwise(x, y, lambda a, b: np.less(a, b).astype(float))
+
+
+def op_greater(x, y):
+    """Element-wise x > y, returns 1.0 / 0.0."""
+    return _binary_elementwise(x, y, lambda a, b: np.greater(a, b).astype(float))
+
+
+def op_less_eq(x, y):
+    """Element-wise x <= y, returns 1.0 / 0.0."""
+    return _binary_elementwise(x, y, lambda a, b: np.less_equal(a, b).astype(float))
+
+
+def op_greater_eq(x, y):
+    """Element-wise x >= y, returns 1.0 / 0.0."""
+    return _binary_elementwise(x, y, lambda a, b: np.greater_equal(a, b).astype(float))
+
+
+def op_not_equal(x, y):
+    """Element-wise x != y, returns 1.0 / 0.0."""
+    return _binary_elementwise(x, y, lambda a, b: np.not_equal(a, b).astype(float))
+
+
 def where(cond, x, y):
     """Alias for if_else with a more pandas-native name. Cond is treated as
     boolean (any non-zero numeric cell is True)."""
