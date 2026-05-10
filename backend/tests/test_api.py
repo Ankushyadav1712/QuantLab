@@ -7,7 +7,6 @@ fixture so we don't pay that cost per test.
 
 import pytest
 from fastapi.testclient import TestClient
-
 from main import app
 
 
@@ -81,9 +80,17 @@ def test_simulate_returns_full_is_oos_shape(client):
 
     # Top-level keys
     expected = {
-        "is_metrics", "oos_metrics", "is_timeseries", "oos_timeseries",
-        "overfitting_analysis", "factor_decomposition", "monthly_returns",
-        "expression", "settings", "data_quality", "diagnostics",
+        "is_metrics",
+        "oos_metrics",
+        "is_timeseries",
+        "oos_timeseries",
+        "overfitting_analysis",
+        "factor_decomposition",
+        "monthly_returns",
+        "expression",
+        "settings",
+        "data_quality",
+        "diagnostics",
     }
     missing = expected - set(body.keys())
     assert not missing, f"missing top-level keys: {missing}"
@@ -97,8 +104,14 @@ def test_simulate_returns_full_is_oos_shape(client):
     for ts_key in ("is_timeseries", "oos_timeseries"):
         ts = body[ts_key]
         assert ts is not None
-        for sub in ("dates", "cumulative_pnl", "daily_returns",
-                    "drawdown", "rolling_sharpe", "turnover"):
+        for sub in (
+            "dates",
+            "cumulative_pnl",
+            "daily_returns",
+            "drawdown",
+            "rolling_sharpe",
+            "turnover",
+        ):
             assert sub in ts, f"{ts_key} missing {sub}"
 
     # IS/OOS dates partition the window — no overlap, IS ends before OOS starts

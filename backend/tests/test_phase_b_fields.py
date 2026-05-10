@@ -13,7 +13,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-
 from data.fetcher import (
     BASE_FIELDS,
     DERIVED_FIELDS,
@@ -39,7 +38,9 @@ def synth_fetcher(tmp_path):
         log_rets = rng.normal(0.0, 0.012, len(dates))
         close = 100.0 * np.exp(np.cumsum(log_rets))
         # Open is yesterday's close + a small overnight gap
-        opens = np.concatenate([[close[0]], close[:-1] * (1 + 0.002 * rng.standard_normal(len(dates) - 1))])
+        opens = np.concatenate(
+            [[close[0]], close[:-1] * (1 + 0.002 * rng.standard_normal(len(dates) - 1))]
+        )
         # High/low bracket the open-close range
         hi = np.maximum(opens, close) * (1 + np.abs(0.005 * rng.standard_normal(len(dates))))
         lo = np.minimum(opens, close) * (1 - np.abs(0.005 * rng.standard_normal(len(dates))))
@@ -66,18 +67,37 @@ def test_all_phase_b_fields_present(synth_fetcher):
     """Every new field must exist in the matrix dict after build."""
     new_fields = {
         # momentum
-        "momentum_3", "momentum_10", "momentum_60", "momentum_120", "momentum_252",
-        "reversal_5", "reversal_20", "momentum_z_60",
+        "momentum_3",
+        "momentum_10",
+        "momentum_60",
+        "momentum_120",
+        "momentum_252",
+        "reversal_5",
+        "reversal_20",
+        "momentum_z_60",
         # volatility
-        "realized_vol_5", "realized_vol_60", "realized_vol_120",
-        "vol_of_vol_20", "parkinson_vol", "garman_klass_vol",
+        "realized_vol_5",
+        "realized_vol_60",
+        "realized_vol_120",
+        "vol_of_vol_20",
+        "parkinson_vol",
+        "garman_klass_vol",
         # microstructure
-        "roll_spread", "kyle_lambda", "vpin_proxy",
-        "up_volume_ratio", "down_volume_ratio", "turnover_ratio",
-        "dollar_amihud", "corwin_schultz",
+        "roll_spread",
+        "kyle_lambda",
+        "vpin_proxy",
+        "up_volume_ratio",
+        "down_volume_ratio",
+        "turnover_ratio",
+        "dollar_amihud",
+        "corwin_schultz",
         # range
-        "atr_5", "atr_60", "range_z_20", "body_to_range",
-        "consecutive_up", "consecutive_down",
+        "atr_5",
+        "atr_60",
+        "range_z_20",
+        "body_to_range",
+        "consecutive_up",
+        "consecutive_down",
     }
     missing = new_fields - set(synth_fetcher._matrix.keys())
     assert not missing, f"Phase B fields missing from matrix: {missing}"
@@ -281,8 +301,8 @@ def test_consecutive_up_increments_on_up_day(synth_fetcher):
     r = synth_fetcher._matrix["returns"]
     streak = synth_fetcher._matrix["consecutive_up"]
     # Pick row 50 (post-warmup) and check at least one ticker has a 2+ streak
-    up_today = (r.iloc[50] > 0)
-    up_yesterday = (r.iloc[49] > 0)
+    up_today = r.iloc[50] > 0
+    up_yesterday = r.iloc[49] > 0
     both_up = up_today & up_yesterday
     if both_up.any():
         for ticker in both_up[both_up].index:
@@ -295,13 +315,17 @@ def test_consecutive_up_increments_on_up_day(synth_fetcher):
 def test_streak_count_helper_directly():
     """The vectorized streak-count trick is the trickiest piece of new code;
     test it directly on a known-answer mask."""
-    mask = pd.DataFrame({
-        "X": [1, 1, 0, 1, 1, 1, 0, 1],
-        "Y": [0, 1, 1, 1, 0, 0, 1, 1],
-    })
-    expected = pd.DataFrame({
-        "X": [1.0, 2.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0],
-        "Y": [0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 1.0, 2.0],
-    })
+    mask = pd.DataFrame(
+        {
+            "X": [1, 1, 0, 1, 1, 1, 0, 1],
+            "Y": [0, 1, 1, 1, 0, 0, 1, 1],
+        }
+    )
+    expected = pd.DataFrame(
+        {
+            "X": [1.0, 2.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0],
+            "Y": [0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 1.0, 2.0],
+        }
+    )
     out = _streak_count(mask)
     pd.testing.assert_frame_equal(out, expected)

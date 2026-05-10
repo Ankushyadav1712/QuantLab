@@ -39,10 +39,7 @@ def main() -> int:
             failures.append(ticker)
 
     elapsed = time.time() - started
-    print(
-        f"\nDownload done in {elapsed:.1f}s — "
-        f"{len(successes)} ok, {len(failures)} failed."
-    )
+    print(f"\nDownload done in {elapsed:.1f}s — {len(successes)} ok, {len(failures)} failed.")
     if failures:
         print("Failed tickers:", ", ".join(failures))
 

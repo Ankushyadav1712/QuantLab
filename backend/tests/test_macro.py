@@ -9,7 +9,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-
 from data.macro import (
     DERIVED_MACRO_BUILDERS,
     FRED_SERIES,
@@ -17,7 +16,6 @@ from data.macro import (
     broadcast_to_matrix,
     download_macro,
 )
-
 
 # ---------- CSV parser ----------
 
@@ -60,8 +58,10 @@ def test_parse_fred_csv_rejects_too_few_columns():
 def _stub_fetcher(canned: dict[str, pd.Series]):
     """Build a fetch_fn that returns the canned series for known field names
     and None for everything else (simulating network failure)."""
+
     def fn(field, series_id):
         return canned.get(field)
+
     return fn
 
 

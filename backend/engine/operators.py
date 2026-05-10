@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-
 # ---------- Time-series operators (axis=0, per ticker) ----------
 
 
@@ -112,17 +111,21 @@ def ts_arg_max(x: pd.DataFrame, d: int) -> pd.DataFrame:
     """Days-ago index of the rolling max — 0 means today is the max, d-1 means
     the oldest day in the window was the max."""
     d = int(d)
+
     # In the rolling window array, position d-1 is "today" and 0 is "oldest".
     # Days-ago = (d-1) - argmax_position.
     def _argmax(a):
         return float(d - 1 - np.argmax(a))
+
     return x.rolling(window=d, min_periods=d).apply(_argmax, raw=True)
 
 
 def ts_arg_min(x: pd.DataFrame, d: int) -> pd.DataFrame:
     d = int(d)
+
     def _argmin(a):
         return float(d - 1 - np.argmin(a))
+
     return x.rolling(window=d, min_periods=d).apply(_argmin, raw=True)
 
 
@@ -159,16 +162,14 @@ def ts_decay_exp(x: pd.DataFrame, d: int, factor: float = 0.5) -> pd.DataFrame:
     return accum / total
 
 
-def ts_partial_corr(
-    x: pd.DataFrame, y: pd.DataFrame, z: pd.DataFrame, d: int
-) -> pd.DataFrame:
+def ts_partial_corr(x: pd.DataFrame, y: pd.DataFrame, z: pd.DataFrame, d: int) -> pd.DataFrame:
     """Rolling partial correlation of x and y, controlling for z.
     Formula: (corr(x,y) - corr(x,z)*corr(y,z)) / sqrt((1-corr(x,z)^2)*(1-corr(y,z)^2))."""
     d = int(d)
     rxy = ts_corr(x, y, d)
     rxz = ts_corr(x, z, d)
     ryz = ts_corr(y, z, d)
-    denom = ((1 - rxz ** 2) * (1 - ryz ** 2)).clip(lower=1e-12)
+    denom = ((1 - rxz**2) * (1 - ryz**2)).clip(lower=1e-12)
     out = (rxy - rxz * ryz) / np.sqrt(denom)
     return out.replace([np.inf, -np.inf], np.nan)
 
@@ -333,8 +334,9 @@ def bucket(x: pd.DataFrame, n: int = 5) -> pd.DataFrame:
     return out.clip(upper=n - 1)
 
 
-def tail(x: pd.DataFrame, lower: float = -np.inf, upper: float = np.inf,
-         replace: float = np.nan) -> pd.DataFrame:
+def tail(
+    x: pd.DataFrame, lower: float = -np.inf, upper: float = np.inf, replace: float = np.nan
+) -> pd.DataFrame:
     """Replace values outside [lower, upper] with ``replace`` (default NaN).
     Used to keep only extreme observations: ``tail(zscore(x), 2, inf)`` keeps
     only z-scores above 2."""
@@ -425,9 +427,7 @@ def _column_labels(group: pd.DataFrame) -> pd.Series:
     return pd.Series(first_valid.values, index=group.columns)
 
 
-def _grouped_transform(
-    x: pd.DataFrame, labels: pd.Series, transform: str
-) -> pd.DataFrame:
+def _grouped_transform(x: pd.DataFrame, labels: pd.Series, transform: str) -> pd.DataFrame:
     """Apply ``transform`` to x's columns grouped by ``labels``.
 
     pandas 2.x removed ``DataFrame.groupby(axis=1)``, so we transpose first.
@@ -524,7 +524,7 @@ def op_sign(x):
 
 
 def power(x, n):
-    return x ** n
+    return x**n
 
 
 def _binary_elementwise(x, y, fn):
@@ -593,7 +593,8 @@ def op_sqrt(x):
 def op_mod(x, y):
     """x mod y, element-wise. Division-by-zero cells return NaN."""
     return _binary_elementwise(
-        x, y,
+        x,
+        y,
         lambda a, b: np.where(np.asarray(b) != 0, np.mod(a, np.where(b == 0, 1, b)), np.nan),
     )
 

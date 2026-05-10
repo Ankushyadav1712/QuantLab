@@ -11,7 +11,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-
 from data.fundamentals import (
     ALL_FUNDAMENTAL_FIELDS,
     INCOME_LABELS,
@@ -25,7 +24,6 @@ from data.fundamentals import (
     download_fundamentals,
 )
 
-
 # ---------- Helpers ----------
 
 
@@ -35,8 +33,16 @@ def _quarterly_dates(n: int, end: str = "2024-12-31") -> pd.DatetimeIndex:
     return pd.date_range(end=end, periods=n, freq="QE")
 
 
-def _income_frame(report_dates: pd.DatetimeIndex, *, revenue, net_income, eps,
-                  gross_profit=None, operating_income=None, ebitda=None) -> pd.DataFrame:
+def _income_frame(
+    report_dates: pd.DatetimeIndex,
+    *,
+    revenue,
+    net_income,
+    eps,
+    gross_profit=None,
+    operating_income=None,
+    ebitda=None,
+) -> pd.DataFrame:
     """Build a yfinance-shaped income statement frame (rows are line items,
     columns are quarterly report dates)."""
     rows = {
@@ -53,24 +59,40 @@ def _income_frame(report_dates: pd.DatetimeIndex, *, revenue, net_income, eps,
     return pd.DataFrame(rows, index=report_dates).T
 
 
-def _balance_frame(report_dates, *, total_assets=None, total_debt=None,
-                   total_equity=None, cash=None,
-                   current_assets=None, current_liabilities=None) -> pd.DataFrame:
+def _balance_frame(
+    report_dates,
+    *,
+    total_assets=None,
+    total_debt=None,
+    total_equity=None,
+    cash=None,
+    current_assets=None,
+    current_liabilities=None,
+) -> pd.DataFrame:
     rows: dict[str, list] = {}
-    if total_assets is not None: rows["Total Assets"] = total_assets
-    if total_debt is not None: rows["Total Debt"] = total_debt
-    if total_equity is not None: rows["Stockholders Equity"] = total_equity
-    if cash is not None: rows["Cash"] = cash
-    if current_assets is not None: rows["Current Assets"] = current_assets
-    if current_liabilities is not None: rows["Current Liabilities"] = current_liabilities
+    if total_assets is not None:
+        rows["Total Assets"] = total_assets
+    if total_debt is not None:
+        rows["Total Debt"] = total_debt
+    if total_equity is not None:
+        rows["Stockholders Equity"] = total_equity
+    if cash is not None:
+        rows["Cash"] = cash
+    if current_assets is not None:
+        rows["Current Assets"] = current_assets
+    if current_liabilities is not None:
+        rows["Current Liabilities"] = current_liabilities
     return pd.DataFrame(rows, index=report_dates).T
 
 
 def _cashflow_frame(report_dates, *, operating_cash_flow=None, capex=None, free_cash_flow=None):
     rows: dict[str, list] = {}
-    if operating_cash_flow is not None: rows["Operating Cash Flow"] = operating_cash_flow
-    if capex is not None: rows["Capital Expenditure"] = capex
-    if free_cash_flow is not None: rows["Free Cash Flow"] = free_cash_flow
+    if operating_cash_flow is not None:
+        rows["Operating Cash Flow"] = operating_cash_flow
+    if capex is not None:
+        rows["Capital Expenditure"] = capex
+    if free_cash_flow is not None:
+        rows["Free Cash Flow"] = free_cash_flow
     return pd.DataFrame(rows, index=report_dates).T
 
 
@@ -99,7 +121,9 @@ def test_pick_row_handles_empty_frame():
 
 def test_extract_quarterly_returns_known_fields():
     dates = _quarterly_dates(3)
-    income = _income_frame(dates, revenue=[100, 110, 120], net_income=[10, 11, 12], eps=[1.0, 1.1, 1.2])
+    income = _income_frame(
+        dates, revenue=[100, 110, 120], net_income=[10, 11, 12], eps=[1.0, 1.1, 1.2]
+    )
     out = _extract_quarterly(income, None, None, INCOME_LABELS, "income")
     assert "revenue" in out
     assert "net_income" in out
@@ -174,7 +198,6 @@ def test_build_per_field_matrix_handles_missing_ticker():
 
 def test_compute_ratios_basic():
     dates = pd.date_range("2024-01-01", periods=2, freq="B")
-    cols = ["AAPL"]
     # Build raw matrices: net_income=100, eps=1.0 → implied shares = 100,
     # market cap = close × shares = 50 × 100 = 5000
     raw = {
@@ -244,8 +267,9 @@ def test_download_fundamentals_with_stubbed_fetcher():
     # Two quarterly reports prior to the daily window
     qdates = pd.DatetimeIndex([pd.Timestamp("2023-12-31"), pd.Timestamp("2024-03-31")])
     income = _income_frame(qdates, revenue=[400, 500], net_income=[50, 60], eps=[0.5, 0.6])
-    balance = _balance_frame(qdates, total_assets=[2000, 2100], total_debt=[800, 850],
-                             total_equity=[1000, 1050])
+    balance = _balance_frame(
+        qdates, total_assets=[2000, 2100], total_debt=[800, 850], total_equity=[1000, 1050]
+    )
     cashflow = _cashflow_frame(qdates, operating_cash_flow=[80, 90], capex=[-30, -35])
 
     def stub(ticker):
@@ -253,7 +277,10 @@ def test_download_fundamentals_with_stubbed_fetcher():
         return income, balance, cashflow
 
     out = download_fundamentals(
-        tickers=["AAPL"], daily_index=dates, close_matrix=close, fetch_fn=stub,
+        tickers=["AAPL"],
+        daily_index=dates,
+        close_matrix=close,
+        fetch_fn=stub,
     )
 
     # Raw fields show up
@@ -262,7 +289,9 @@ def test_download_fundamentals_with_stubbed_fetcher():
     # FCF was synthesized from OCF + capex (yfinance often omits FCF)
     assert "free_cash_flow" in out
     # FCF Q1 = OCF + capex = 80 + (-30) = 50; visible after Q1 + 1Q lag (~end-March)
-    fcf_late = out["free_cash_flow"].loc[out["free_cash_flow"].index >= "2024-05-01", "AAPL"].dropna()
+    fcf_late = (
+        out["free_cash_flow"].loc[out["free_cash_flow"].index >= "2024-05-01", "AAPL"].dropna()
+    )
     assert len(fcf_late) > 0
     # Could be either 50 (from Q4-2023) or 55 (from Q1-2024) depending on how late we look
     assert fcf_late.iloc[-1] in (50.0, 55.0)
@@ -295,7 +324,10 @@ def test_download_fundamentals_failed_ticker_keeps_running():
         )
 
     out = download_fundamentals(
-        tickers=["AAPL", "MSFT"], daily_index=dates, close_matrix=close, fetch_fn=stub,
+        tickers=["AAPL", "MSFT"],
+        daily_index=dates,
+        close_matrix=close,
+        fetch_fn=stub,
     )
 
     # AAPL has data; MSFT column is all NaN — no exception raised

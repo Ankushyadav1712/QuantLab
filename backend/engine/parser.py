@@ -6,51 +6,123 @@ from typing import Any, Union
 
 DATA_FIELDS = {
     # Original (7)
-    "open", "high", "low", "close", "volume", "returns", "vwap",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "returns",
+    "vwap",
     # Price structure (7)
-    "median_price", "weighted_close", "range_", "body",
-    "upper_shadow", "lower_shadow", "gap",
+    "median_price",
+    "weighted_close",
+    "range_",
+    "body",
+    "upper_shadow",
+    "lower_shadow",
+    "gap",
     # Return variants (5)
-    "log_returns", "abs_returns", "intraday_return",
-    "overnight_return", "signed_volume",
+    "log_returns",
+    "abs_returns",
+    "intraday_return",
+    "overnight_return",
+    "signed_volume",
     # Volume & liquidity (4)
-    "dollar_volume", "adv20", "volume_ratio", "amihud",
+    "dollar_volume",
+    "adv20",
+    "volume_ratio",
+    "amihud",
     # Volatility & risk (5)
-    "true_range", "atr", "realized_vol", "skewness", "kurtosis",
+    "true_range",
+    "atr",
+    "realized_vol",
+    "skewness",
+    "kurtosis",
     # Momentum & relative (4)
-    "momentum_5", "momentum_20", "close_to_high_252", "high_low_ratio",
+    "momentum_5",
+    "momentum_20",
+    "close_to_high_252",
+    "high_low_ratio",
     # ----- Phase B: extended momentum (8) -----
-    "momentum_3", "momentum_10", "momentum_60", "momentum_120", "momentum_252",
-    "reversal_5", "reversal_20", "momentum_z_60",
+    "momentum_3",
+    "momentum_10",
+    "momentum_60",
+    "momentum_120",
+    "momentum_252",
+    "reversal_5",
+    "reversal_20",
+    "momentum_z_60",
     # ----- Phase B: extended volatility (6) -----
-    "realized_vol_5", "realized_vol_60", "realized_vol_120",
-    "vol_of_vol_20", "parkinson_vol", "garman_klass_vol",
+    "realized_vol_5",
+    "realized_vol_60",
+    "realized_vol_120",
+    "vol_of_vol_20",
+    "parkinson_vol",
+    "garman_klass_vol",
     # ----- Phase B: microstructure (8) -----
-    "roll_spread", "kyle_lambda", "vpin_proxy",
-    "up_volume_ratio", "down_volume_ratio", "turnover_ratio",
-    "dollar_amihud", "corwin_schultz",
+    "roll_spread",
+    "kyle_lambda",
+    "vpin_proxy",
+    "up_volume_ratio",
+    "down_volume_ratio",
+    "turnover_ratio",
+    "dollar_amihud",
+    "corwin_schultz",
     # ----- Phase B: extended range / candle structure (6) -----
-    "atr_5", "atr_60", "range_z_20", "body_to_range",
-    "consecutive_up", "consecutive_down",
+    "atr_5",
+    "atr_60",
+    "range_z_20",
+    "body_to_range",
+    "consecutive_up",
+    "consecutive_down",
     # GICS classification labels (4) — string-valued, used as the second arg
     # of group_* operators.  The evaluator resolves them to (dates × tickers)
     # frames where every cell is the ticker's group label string.
-    "sector", "industry_group", "industry", "sub_industry",
+    "sector",
+    "industry_group",
+    "industry",
+    "sub_industry",
     # ----- Phase C: FRED macro (broadcast to every ticker per day) -----
     "vix",
-    "treasury_3m_yield", "treasury_2y_yield", "treasury_10y_yield",
-    "term_spread_10y_2y", "term_spread_10y_3m",
-    "high_yield_spread", "baa_yield", "aaa_yield", "credit_spread_baa_aaa",
-    "dxy", "wti_oil",
+    "treasury_3m_yield",
+    "treasury_2y_yield",
+    "treasury_10y_yield",
+    "term_spread_10y_2y",
+    "term_spread_10y_3m",
+    "high_yield_spread",
+    "baa_yield",
+    "aaa_yield",
+    "credit_spread_baa_aaa",
+    "dxy",
+    "wti_oil",
     # ----- Phase C: yfinance fundamentals (raw, lagged 1Q) -----
-    "revenue", "gross_profit", "operating_income", "net_income", "ebitda", "eps",
-    "total_assets", "total_debt", "total_equity", "cash",
-    "current_assets", "current_liabilities",
-    "operating_cash_flow", "capex", "free_cash_flow",
+    "revenue",
+    "gross_profit",
+    "operating_income",
+    "net_income",
+    "ebitda",
+    "eps",
+    "total_assets",
+    "total_debt",
+    "total_equity",
+    "cash",
+    "current_assets",
+    "current_liabilities",
+    "operating_cash_flow",
+    "capex",
+    "free_cash_flow",
     # ----- Phase C: computed fundamentals ratios -----
-    "pe_ratio", "pb_ratio", "ps_ratio", "ev_ebitda",
-    "roe", "roa", "debt_to_equity", "current_ratio",
-    "gross_margin", "operating_margin", "fcf_yield",
+    "pe_ratio",
+    "pb_ratio",
+    "ps_ratio",
+    "ev_ebitda",
+    "roe",
+    "roa",
+    "debt_to_equity",
+    "current_ratio",
+    "gross_margin",
+    "operating_margin",
+    "fcf_yield",
 }
 
 # User-facing aliases that resolve to a canonical field name.  `range` is the
@@ -193,9 +265,7 @@ class Parser:
         self.pos = 0
         node = self.parse_expression()
         if self._peek().type is not TokenType.EOF:
-            raise ValueError(
-                f"Unexpected token {self._peek().type.name} after expression"
-            )
+            raise ValueError(f"Unexpected token {self._peek().type.name} after expression")
         return node
 
     def _peek(self) -> Token:
@@ -204,9 +274,7 @@ class Parser:
     def _consume(self, expected: TokenType | None = None) -> Token:
         tok = self.tokens[self.pos]
         if expected is not None and tok.type is not expected:
-            raise ValueError(
-                f"Expected {expected.name}, got {tok.type.name}"
-            )
+            raise ValueError(f"Expected {expected.name}, got {tok.type.name}")
         self.pos += 1
         return tok
 
@@ -264,13 +332,10 @@ class Parser:
                 # resolves aliases at lookup time.
                 return DataField(name)
             raise ValueError(
-                f"Unknown identifier {name!r}: not a data field; "
-                f"expected '(' for function call"
+                f"Unknown identifier {name!r}: not a data field; expected '(' for function call"
             )
 
-        raise ValueError(
-            f"Unexpected token {tok.type.name} at position {self.pos}"
-        )
+        raise ValueError(f"Unexpected token {tok.type.name} at position {self.pos}")
 
     def parse_args(self) -> list[ASTNode]:
         args: list[ASTNode] = []

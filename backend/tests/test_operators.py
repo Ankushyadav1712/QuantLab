@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-
 from engine import operators as ops
 
 
@@ -518,11 +517,13 @@ def group_fixture():
             [2.0, 4.0, 30.0, 40.0],
             [5.0, 6.0, 50.0, 60.0],
         ],
-        index=dates, columns=cols,
+        index=dates,
+        columns=cols,
     )
     sectors = pd.DataFrame(
         [["Tech", "Tech", "Energy", "Energy"]] * 3,
-        index=dates, columns=cols,
+        index=dates,
+        columns=cols,
     )
     return x, sectors
 
@@ -633,7 +634,8 @@ def test_group_neutralize_via_evaluator():
     close = pd.DataFrame([[1.0, 3.0, 10.0], [2.0, 4.0, 20.0]], index=dates, columns=cols)
     sector = pd.DataFrame(
         [["Tech", "Tech", "Energy"], ["Tech", "Tech", "Energy"]],
-        index=dates, columns=cols,
+        index=dates,
+        columns=cols,
     )
     evaluator = AlphaEvaluator({"close": close, "sector": sector})
     result = evaluator.evaluate("group_neutralize(close, sector)")

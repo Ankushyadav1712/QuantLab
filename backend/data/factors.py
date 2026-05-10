@@ -16,7 +16,6 @@ from pathlib import Path
 
 import httpx
 import pandas as pd
-
 from config import CACHE_DIR
 
 FF5_URL = (

@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-
 from analytics.mv_optimizer import (
     compute_weights,
     equal_weights,
@@ -13,7 +12,6 @@ from analytics.mv_optimizer import (
     mv_optimal,
     risk_parity,
 )
-
 
 # ---------- Fixtures ----------
 
@@ -24,8 +22,8 @@ def two_alphas_one_low_vol():
     weight A heavier than B."""
     rng = np.random.default_rng(0)
     n = 500
-    a = rng.normal(0.0005, 0.005, n)   # low vol
-    b = rng.normal(0.0005, 0.020, n)   # 4× the vol
+    a = rng.normal(0.0005, 0.005, n)  # low vol
+    b = rng.normal(0.0005, 0.020, n)  # 4× the vol
     return pd.DataFrame({"A": a, "B": b})
 
 
@@ -33,11 +31,13 @@ def two_alphas_one_low_vol():
 def three_uncorrelated_alphas():
     rng = np.random.default_rng(1)
     n = 500
-    return pd.DataFrame({
-        "A": rng.normal(0.001, 0.01, n),
-        "B": rng.normal(0.001, 0.01, n),
-        "C": rng.normal(0.001, 0.01, n),
-    })
+    return pd.DataFrame(
+        {
+            "A": rng.normal(0.001, 0.01, n),
+            "B": rng.normal(0.001, 0.01, n),
+            "C": rng.normal(0.001, 0.01, n),
+        }
+    )
 
 
 # ---------- equal_weights ----------
@@ -98,8 +98,8 @@ def test_mv_optimal_can_produce_negative_weights():
     optimizer should be willing to short it.  Document the behavior."""
     rng = np.random.default_rng(7)
     n = 500
-    a = rng.normal(0.001, 0.01, n)    # positive
-    b = rng.normal(-0.001, 0.01, n)   # negative
+    a = rng.normal(0.001, 0.01, n)  # positive
+    b = rng.normal(-0.001, 0.01, n)  # negative
     df = pd.DataFrame({"A": a, "B": b})
     w = mv_optimal(df)
     # Sum still 1, but B can be negative

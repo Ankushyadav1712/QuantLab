@@ -32,7 +32,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
 from config import CACHE_DIR
 
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60  # 1 week — fundamentals change quarterly
@@ -52,8 +51,11 @@ INCOME_LABELS: dict[str, tuple[str, ...]] = {
 BALANCE_LABELS: dict[str, tuple[str, ...]] = {
     "total_assets": ("Total Assets", "TotalAssets"),
     "total_debt": ("Total Debt", "TotalDebt"),
-    "total_equity": ("Total Equity Gross Minority Interest", "Stockholders Equity",
-                     "Total Stockholder Equity"),
+    "total_equity": (
+        "Total Equity Gross Minority Interest",
+        "Stockholders Equity",
+        "Total Stockholder Equity",
+    ),
     "cash": ("Cash And Cash Equivalents", "Cash"),
     "current_assets": ("Current Assets", "Total Current Assets"),
     "current_liabilities": ("Current Liabilities", "Total Current Liabilities"),
@@ -66,9 +68,17 @@ CASHFLOW_LABELS: dict[str, tuple[str, ...]] = {
 
 # Names ratios depend on (and the close-price matrix, supplied at compute time).
 RATIO_FIELDS: tuple[str, ...] = (
-    "pe_ratio", "pb_ratio", "ps_ratio", "ev_ebitda",
-    "roe", "roa", "debt_to_equity", "current_ratio",
-    "gross_margin", "operating_margin", "fcf_yield",
+    "pe_ratio",
+    "pb_ratio",
+    "ps_ratio",
+    "ev_ebitda",
+    "roe",
+    "roa",
+    "debt_to_equity",
+    "current_ratio",
+    "gross_margin",
+    "operating_margin",
+    "fcf_yield",
 )
 
 # Combined surface used by parser/editor/FIELDS metadata
@@ -123,8 +133,7 @@ def _extract_quarterly(
             continue
         # yfinance frames have report dates as columns — transpose to a Series
         # indexed by date with float values.
-        s = pd.Series(pd.to_numeric(row.values, errors="coerce"),
-                      index=pd.to_datetime(row.index))
+        s = pd.Series(pd.to_numeric(row.values, errors="coerce"), index=pd.to_datetime(row.index))
         s = s.sort_index()
         out[field] = s
     return out
@@ -144,6 +153,7 @@ def _per_ticker_frames(
 def _yfinance_fetch(ticker: str):
     """Default fetcher — hits the network.  Tests pass a stub instead."""
     import yfinance as yf
+
     t = yf.Ticker(ticker)
     return t.quarterly_financials, t.quarterly_balance_sheet, t.quarterly_cashflow
 
@@ -271,22 +281,23 @@ def download_fundamentals(
     fetch_fn = fetch_fn or _yfinance_fetch
 
     # Per-field accumulator: {field: {ticker: Series}}
-    raw_collected: dict[str, dict[str, pd.Series]] = {
-        field: {} for field in RAW_FUNDAMENTAL_FIELDS
-    }
+    raw_collected: dict[str, dict[str, pd.Series]] = {field: {} for field in RAW_FUNDAMENTAL_FIELDS}
 
     # Load (cache or fetch) each ticker's three frames, then extract every
     # labeled row we know about.
     for ticker in tickers:
         income, balance, cashflow = _per_ticker_frames(ticker, fetch_fn)
-        for field, series in _extract_quarterly(income, balance, cashflow,
-                                                INCOME_LABELS, "income").items():
+        for field, series in _extract_quarterly(
+            income, balance, cashflow, INCOME_LABELS, "income"
+        ).items():
             raw_collected[field][ticker] = series
-        for field, series in _extract_quarterly(income, balance, cashflow,
-                                                BALANCE_LABELS, "balance").items():
+        for field, series in _extract_quarterly(
+            income, balance, cashflow, BALANCE_LABELS, "balance"
+        ).items():
             raw_collected[field][ticker] = series
-        for field, series in _extract_quarterly(income, balance, cashflow,
-                                                CASHFLOW_LABELS, "cashflow").items():
+        for field, series in _extract_quarterly(
+            income, balance, cashflow, CASHFLOW_LABELS, "cashflow"
+        ).items():
             raw_collected[field][ticker] = series
 
         # Synthesize free_cash_flow if missing but OCF + capex are present
@@ -302,7 +313,10 @@ def download_fundamentals(
     raw_matrices: dict[str, pd.DataFrame] = {}
     for field in RAW_FUNDAMENTAL_FIELDS:
         raw_matrices[field] = _build_per_field_matrix(
-            raw_collected[field], daily_index, tickers, lag_quarters=lag_quarters,
+            raw_collected[field],
+            daily_index,
+            tickers,
+            lag_quarters=lag_quarters,
         )
 
     # Compute ratios (need close matrix; aligned to the same daily index)

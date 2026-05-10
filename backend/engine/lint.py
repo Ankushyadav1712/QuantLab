@@ -17,7 +17,6 @@ from engine.parser import (
     UnaryOp,
 )
 
-
 # Operators where one of the args MUST be positive (a rolling window length).
 # Maps op name -> argument index (0-based) of the window arg.
 WINDOWED_OPERATORS: dict[str, int] = {
@@ -106,63 +105,73 @@ def _check_function(node: FunctionCall, diagnostics: list[dict[str, Any]]) -> No
     if name in SHIFT_OPERATORS:
         idx = SHIFT_OPERATORS[name]
         if idx >= len(node.args):
-            diagnostics.append({
-                "severity": "error",
-                "op": name,
-                "message": f"{name}() expects {idx + 1} arguments, got {len(node.args)}.",
-            })
+            diagnostics.append(
+                {
+                    "severity": "error",
+                    "op": name,
+                    "message": f"{name}() expects {idx + 1} arguments, got {len(node.args)}.",
+                }
+            )
             return
         n = _literal_int(node.args[idx])
         if n is None:
             return  # Non-literal arg; can't statically check
         if n < 0:
-            diagnostics.append({
-                "severity": "error",
-                "op": name,
-                "message": (
-                    f"{name}(x, {n}) peeks {abs(n)} day(s) into the future — "
-                    f"this is look-ahead bias and would invalidate the backtest. "
-                    f"Use a positive shift."
-                ),
-            })
+            diagnostics.append(
+                {
+                    "severity": "error",
+                    "op": name,
+                    "message": (
+                        f"{name}(x, {n}) peeks {abs(n)} day(s) into the future — "
+                        f"this is look-ahead bias and would invalidate the backtest. "
+                        f"Use a positive shift."
+                    ),
+                }
+            )
         elif n == 0:
-            diagnostics.append({
-                "severity": "warning",
-                "op": name,
-                "message": (
-                    f"{name}(x, 0) is a no-op "
-                    f"({'identity' if name == 'delay' else 'always zero'}). "
-                    f"Did you mean a positive shift?"
-                ),
-            })
+            diagnostics.append(
+                {
+                    "severity": "warning",
+                    "op": name,
+                    "message": (
+                        f"{name}(x, 0) is a no-op "
+                        f"({'identity' if name == 'delay' else 'always zero'}). "
+                        f"Did you mean a positive shift?"
+                    ),
+                }
+            )
         return
 
     if name in WINDOWED_OPERATORS:
         idx = WINDOWED_OPERATORS[name]
         if idx >= len(node.args):
-            diagnostics.append({
-                "severity": "error",
-                "op": name,
-                "message": f"{name}() expects {idx + 1} arguments, got {len(node.args)}.",
-            })
+            diagnostics.append(
+                {
+                    "severity": "error",
+                    "op": name,
+                    "message": f"{name}() expects {idx + 1} arguments, got {len(node.args)}.",
+                }
+            )
             return
         d = _literal_int(node.args[idx])
         if d is None:
             return
         if d <= 0:
-            diagnostics.append({
-                "severity": "error",
-                "op": name,
-                "message": (
-                    f"{name}(x, {d}) requires a positive rolling window. Got {d}."
-                ),
-            })
+            diagnostics.append(
+                {
+                    "severity": "error",
+                    "op": name,
+                    "message": (f"{name}(x, {d}) requires a positive rolling window. Got {d}."),
+                }
+            )
         elif d > 504:  # > ~2 trading years — usually a typo
-            diagnostics.append({
-                "severity": "warning",
-                "op": name,
-                "message": (
-                    f"{name}(x, {d}) — window is very long ({d} days ≈ "
-                    f"{d / 252:.1f} trading years). Make sure this is intentional."
-                ),
-            })
+            diagnostics.append(
+                {
+                    "severity": "warning",
+                    "op": name,
+                    "message": (
+                        f"{name}(x, {d}) — window is very long ({d} days ≈ "
+                        f"{d / 252:.1f} trading years). Make sure this is intentional."
+                    ),
+                }
+            )
