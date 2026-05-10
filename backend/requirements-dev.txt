@@ -1,4 +1,4 @@
 # Dev-only deps. Installed in CI lint job; not baked into the production image.
 -r requirements.txt
-ruff==0.14.4
-pip-audit==2.9.0
+ruff==0.15.12
+pip-audit==2.10.0
