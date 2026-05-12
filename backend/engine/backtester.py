@@ -89,6 +89,16 @@ class BacktestResult:
     weights: pd.DataFrame
     turnover: list[float]
     positions: pd.DataFrame
+    # Post-neutralization alpha signal (pre-truncation, pre-scaling).  This is
+    # what IC / alpha-decay metrics correlate against forward returns — the
+    # researcher's *prediction*, before portfolio construction shrinks it.
+    # Optional so older saved results / tests that build a BacktestResult by
+    # hand don't break.
+    signal_matrix: pd.DataFrame | None = None
+    # Per-stock daily returns aligned to the same (date × ticker) grid.  Used
+    # by IC computation; stored here to avoid leaking the global data dict
+    # into analytics modules.
+    forward_returns: pd.DataFrame | None = None
 
 
 class Backtester:
@@ -181,6 +191,10 @@ class Backtester:
 
         # Neutralization
         alpha = self._neutralize(alpha, config.neutralization)
+        # Snapshot the post-neutralization signal for IC analytics.  Done
+        # before any downstream mutation (normalize/clip would distort the
+        # ranks we want IC to measure).
+        signal_snapshot = alpha.copy()
 
         # Normalize to fractional weights (sum of abs ≈ 1 per row)
         abs_sum = alpha.abs().sum(axis=1)
@@ -247,6 +261,8 @@ class Backtester:
             weights=weights,
             turnover=turnover.tolist(),
             positions=positions,
+            signal_matrix=signal_snapshot,
+            forward_returns=returns,
         )
 
     # ------------------------------------------------------------------
