@@ -1,4 +1,5 @@
 import os
+from datetime import date, timedelta
 from pathlib import Path
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -112,7 +113,15 @@ SECTOR_MAP = {
 # Production uses a smaller window to keep cold-start data downloads fast on
 # free-tier hosts; development gets the full 6-year history.
 DATA_START = "2020-01-01" if ENVIRONMENT == "production" else "2019-01-01"
-DATA_END = "2024-12-31"
+
+# DATA_END trails today by ~1 week so:
+#  - weekend / market-holiday gaps don't leave empty trailing rows,
+#  - yfinance has time to publish the latest close,
+#  - the time-sensitive backtest window keeps overlap with yfinance's
+#    fundamentals window (which now only returns ~5 most-recent quarters).
+# Override via env (DATA_END=2024-12-31) for reproducible CI / pinned tests.
+_DEFAULT_DATA_END = (date.today() - timedelta(days=7)).isoformat()
+DATA_END = os.getenv("DATA_END") or _DEFAULT_DATA_END
 
 CACHE_DIR = Path(__file__).parent / "data" / "cache"
 

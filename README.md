@@ -315,7 +315,8 @@ These are honest gaps, not promises.  The platform's metrics should be read in l
 - **No borrow cost on shorts.** Market-neutral strategies have a 1–3 % per-year cost we don't charge.
 - **Single 70/30 IS/OOS split**, not walk-forward.  One regime in OOS can pass or fail you by chance.  Walk-forward (rolling 12-month OOS windows) is the proper test.
 - **Daily resolution only.** Can't capture intraday signals or do anything tick-level.
-- **No fundamentals or alternative data.** Limits the ceiling of what alphas can be expressed.
+- **Fundamentals are rate-limited.** yfinance's free fundamentals API silently truncated to the 5 most-recent quarters in 2025 and rate-limits at universe sizes > ~30 tickers. The 26 fundamentals fields (`roe`, `pe_ratio`, `revenue`, …) exist in the codebase but typically come back mostly-NaN at our 50–100 ticker scale. The platform detects this at startup, **hides fundamentals from `/api/operators` when coverage < 20%, and rejects fundamentals expressions in `/api/validate`** with a clear "fundamentals unavailable" error — so the user can't get a confusing "all dates dropped" failure later. Real fundamentals research needs a paid source (Polygon.io / WRDS / Compustat).
+- **No alternative data.** No news sentiment, options flow, ETF holdings, satellite, etc. Limits the ceiling of what alphas can be expressed.
 
 ## Mitigations already shipped
 
