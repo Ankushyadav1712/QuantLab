@@ -1302,6 +1302,133 @@ li.diag-warning .diag-tag { background: rgba(240, 160, 32, 0.25); color: var(--a
   padding: 12px 0;
 }
 
+/* ============ Tier 2: Sector Exposure panel ============ */
+.exposure-section { padding: 16px 18px; }
+.exp-header { margin-bottom: 8px; }
+.exp-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.exp-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.exp-headline {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 6px 10px;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.04));
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+.exp-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.exp-row {
+  display: grid;
+  grid-template-columns: 200px 1fr 80px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.exp-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.exp-bar-track {
+  height: 14px;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.04));
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+.exp-bar {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 320ms cubic-bezier(.4,.2,.2,1);
+}
+.exp-bar-pos { background: var(--accent-green, #66bb6a); }
+.exp-bar-neg { background: var(--accent-red, #ef5350); }
+.exp-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-align: right;
+}
+.exp-value-pos { color: var(--accent-green, #66bb6a); }
+.exp-value-neg { color: var(--accent-red, #ef5350); }
+
+/* ============ Tier 2: Crisis Performance panel ============ */
+.stress-section { padding: 16px 18px; }
+.stress-header { margin-bottom: 12px; }
+.stress-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.stress-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.stress-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stress-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(4, minmax(80px, 1fr));
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.03));
+  border-left: 3px solid transparent;
+}
+.stress-sev-good { border-left-color: var(--accent-green, #66bb6a); }
+.stress-sev-warn { border-left-color: var(--accent-amber, #ffa726); }
+.stress-sev-bad  { border-left-color: var(--accent-red, #ef5350); }
+.stress-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stress-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+.stress-period {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', monospace;
+}
+.stress-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+}
+.stress-key {
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 9px;
+}
+.stress-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+}
+.stress-val-good { color: var(--accent-green, #66bb6a); }
+.stress-val-bad  { color: var(--accent-red, #ef5350); }
+.stress-val-warn { color: var(--text-primary); }
+
 .tooltip {
   position: fixed;
   background: var(--bg-tertiary);
