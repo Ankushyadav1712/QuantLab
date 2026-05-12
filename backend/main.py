@@ -52,7 +52,7 @@ from db.migrations import init_db
 from engine.backtester import Backtester, SimulationConfig
 from engine.evaluator import AlphaEvaluator
 from engine.lint import lint_ast
-from engine.parser import Parser
+from engine.parser import BinaryOp, DataField, FunctionCall, Parser, UnaryOp
 from engine.sweep import combo_for_index, expand_sweeps
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1051,6 +1051,24 @@ async def lifespan(_app: FastAPI):
             warnings.warn(f"[fundamentals] load failed: {exc}; skipping")
     _state["fundamentals_present"] = fundamentals_present
     _state["fundamentals_lag_quarters"] = LAG_QUARTERS
+
+    # Coverage gate: yfinance's free fundamentals API only returns the 5 most
+    # recent quarters AND silently rate-limits at universe sizes > ~30 tickers.
+    # Result: matrices may exist in _state but be mostly-NaN.  Probing one
+    # canonical field (`revenue`) tells us whether fundamentals are usable.
+    # When below ``_FUNDAMENTALS_MIN_COVERAGE``, we mark the whole block as
+    # unavailable so /api/operators hides them and /api/validate gives a
+    # clear error instead of letting users hit the >50%-NaN backtest filter.
+    fundamentals_available = False
+    fundamentals_coverage_pct = 0.0
+    canary = _state["data"].get("revenue")
+    if canary is not None and not canary.empty:
+        n_total = canary.shape[0] * canary.shape[1]
+        n_nan = int(canary.isna().sum().sum())
+        fundamentals_coverage_pct = 100.0 * (1.0 - n_nan / n_total) if n_total else 0.0
+        fundamentals_available = fundamentals_coverage_pct >= _FUNDAMENTALS_MIN_COVERAGE
+    _state["fundamentals_available"] = fundamentals_available
+    _state["fundamentals_coverage_pct"] = fundamentals_coverage_pct
     log.info(
         "lifespan: ready",
         extra={
@@ -1059,6 +1077,8 @@ async def lifespan(_app: FastAPI):
             "n_tickers": len(fetcher._frames) if hasattr(fetcher, "_frames") else 0,
             "n_universes": len(list_universes()),
             "ff5_present": bool(ff5 is not None and not ff5.empty),
+            "fundamentals_available": _state.get("fundamentals_available", False),
+            "fundamentals_coverage_pct": round(_state.get("fundamentals_coverage_pct", 0.0), 1),
             "auth_enabled": bool(API_TOKEN),
         },
     )
@@ -1075,6 +1095,12 @@ app = FastAPI(title="QuantLab", lifespan=lifespan)
 _LIMIT_DEFAULT = "120/minute" if ENVIRONMENT != "production" else "30/minute"
 _LIMIT_SIMULATE = "60/minute" if ENVIRONMENT != "production" else "10/minute"
 _LIMIT_VALIDATE = "300/minute"  # cheap, debounced from the editor — keep loose
+
+# Minimum non-NaN coverage % on the canonical `revenue` field for the whole
+# fundamentals block to be considered "available".  At 20% the data is at
+# least usable for an alpha that runs over a recent window; below that we
+# gate fundamentals out of /api/operators and /api/validate.
+_FUNDAMENTALS_MIN_COVERAGE = 20.0
 limiter = Limiter(key_func=get_remote_address, default_limits=[_LIMIT_DEFAULT])
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
@@ -1351,13 +1377,31 @@ _METRIC_KEYS = (
 
 
 def _compute_perf_pack(
-    result, perf: PerformanceAnalytics, *, spy: pd.Series | None, n_trials: int = 1
+    result,
+    perf: PerformanceAnalytics,
+    *,
+    spy: pd.Series | None,
+    n_trials: int = 1,
+    gics_map: dict[str, dict[str, str | None]] | None = None,
+    size_field: pd.DataFrame | None = None,
 ):
-    """Run analytics on a BacktestResult and shape the (metrics, timeseries) pair."""
+    """Run analytics on a BacktestResult and shape the (metrics, timeseries) pair.
+
+    ``gics_map`` (ticker → sector/industry/...) feeds sector exposure analytics.
+    ``size_field`` is the per-day market_cap (or close as a fallback) matrix
+    used for size-factor exposure.  Both are optional — missing inputs cause
+    the corresponding analytics blocks to be omitted rather than fail.
+    """
     bench = None
     if isinstance(spy, pd.Series) and not spy.empty:
         bench = spy.reindex(pd.to_datetime(result.dates))
-    full = perf.compute(result, benchmark_returns=bench, n_trials=n_trials)
+    full = perf.compute(
+        result,
+        benchmark_returns=bench,
+        n_trials=n_trials,
+        gics_map=gics_map,
+        size_field=size_field,
+    )
 
     metrics = {k: full[k] for k in _METRIC_KEYS}
     # Pass period info into compare_is_oos through the metrics dict
@@ -1371,6 +1415,10 @@ def _compute_perf_pack(
     metrics["alpha_decay"] = full.get("alpha_decay")
     # Drawdown durations: avg/max/current days underwater
     metrics["drawdown_durations"] = full.get("drawdown_durations")
+    # Tier 2 — sector + size exposure, stress test
+    metrics["sector_exposure"] = full.get("sector_exposure")
+    metrics["size_exposure"] = full.get("size_exposure")
+    metrics["stress_test"] = full.get("stress_test", [])
 
     timeseries = {
         "dates": list(result.dates),
@@ -1404,10 +1452,21 @@ def _build_response(
     spy = _state.get("spy_returns")
     perf = PerformanceAnalytics()
 
+    # Tier 2 inputs: GICS sector map (already loaded) + size proxy (market_cap
+    # if available, else close as a documented approximation).
+    size_field = _state["data"].get("market_cap")
+    if size_field is None:
+        size_field = _state["data"].get("close")
+
     # Selection bias only applies to IS (the slice the researcher tunes against).
     # OOS is a held-out check — n_trials=1 keeps DSR honest there.
     is_metrics, is_timeseries, is_monthly = _compute_perf_pack(
-        is_result, perf, spy=spy, n_trials=n_trials
+        is_result,
+        perf,
+        spy=spy,
+        n_trials=n_trials,
+        gics_map=gics_map,
+        size_field=size_field,
     )
 
     oos_metrics: dict[str, Any] | None = None
@@ -1417,7 +1476,12 @@ def _build_response(
 
     if oos_result is not None:
         oos_metrics, oos_timeseries, oos_monthly = _compute_perf_pack(
-            oos_result, perf, spy=spy, n_trials=1
+            oos_result,
+            perf,
+            spy=spy,
+            n_trials=1,
+            gics_map=gics_map,
+            size_field=size_field,
         )
         assert oos_metrics is not None  # narrow Optional for mypy
         overfitting = perf.compare_is_oos(is_metrics, oos_metrics)
@@ -1533,12 +1597,28 @@ def _data_quality(
     # data was actually loaded — saves the user's eyes when they're using only
     # OHLCV/macro fields.
     fundamentals_present = _state.get("fundamentals_present", [])
+    fundamentals_available = _state.get("fundamentals_available", False)
+    fundamentals_coverage_pct = _state.get("fundamentals_coverage_pct", 0.0)
     fundamentals_block: dict[str, Any] = {
         "enabled": bool(fundamentals_present),
+        "available": bool(fundamentals_available),
+        "coverage_pct": round(fundamentals_coverage_pct, 1),
         "lag_quarters": _state.get("fundamentals_lag_quarters", 0),
         "fields_loaded": len(fundamentals_present),
     }
-    if fundamentals_present:
+    if not fundamentals_available and fundamentals_present:
+        # Loaded but mostly NaN — surface so users don't write fundamentals
+        # alphas expecting them to work.
+        notes.append(
+            f"⚠️ Fundamentals (P/E, ROE, revenue, …) are UNAVAILABLE in this "
+            f"deployment (coverage {fundamentals_coverage_pct:.1f}%). yfinance's "
+            "free fundamentals API now returns only the 5 most-recent quarters "
+            "and silently rate-limits at universe sizes > ~30 tickers. "
+            "Fundamentals fields are hidden from /api/operators; use price / "
+            "volume / momentum / volatility fields instead. For real "
+            "fundamentals data, integrate Polygon.io or WRDS."
+        )
+    elif fundamentals_present:
         notes.append(
             f"Fundamentals (P/E, ROE, revenue, …) are lagged "
             f"{_state.get('fundamentals_lag_quarters', 1)} quarter(s) as a "
@@ -1618,13 +1698,64 @@ def get_universes():
 
 @app.get("/api/operators")
 def get_operators():
+    """Catalog of operators + fields.
+
+    When yfinance fundamentals coverage is below threshold (typical for the
+    free deployment), the fundamentals fields are hidden from the listing so
+    the editor's autocomplete doesn't suggest them.  Callers that need the
+    unfiltered raw list can pass ``?include_unavailable=true`` — useful for
+    debugging which fields exist in the codebase vs which are usable now.
+    """
+    fundamentals_ok = _state.get("fundamentals_available", False)
+    coverage_pct = _state.get("fundamentals_coverage_pct", 0.0)
+    if fundamentals_ok:
+        fields = FIELDS
+    else:
+        fields = [f for f in FIELDS if f.get("category") not in _FUNDAMENTALS_CATEGORIES]
     return {
         "operators": OPERATORS,
-        "fields": FIELDS,
-        # Kept for backwards compatibility with any caller that read the old
-        # flat-list shape; new code should prefer `fields`.
+        "fields": fields,
         "data_fields": DATA_FIELDS,
+        "fundamentals_available": fundamentals_ok,
+        "fundamentals_coverage_pct": round(coverage_pct, 1),
+        "fundamentals_field_count": sum(
+            1 for f in FIELDS if f.get("category") in _FUNDAMENTALS_CATEGORIES
+        ),
     }
+
+
+# Categories that depend on the yfinance fundamentals fetch.  Both the raw
+# line items (`fundamentals`) and the computed ratios (`fundamentals_ratio`)
+# fall over when fundamentals coverage is poor, so we gate both.
+_FUNDAMENTALS_CATEGORIES = {"fundamentals", "fundamentals_ratio"}
+
+
+def _fundamentals_field_names() -> set[str]:
+    """Names of every field that depends on the fundamentals data block."""
+    return {f["name"] for f in FIELDS if f.get("category") in _FUNDAMENTALS_CATEGORIES}
+
+
+def _expression_uses_fundamentals(ast: Any) -> list[str]:
+    """Walk the AST and return any fundamentals-category field names referenced."""
+    fund_names = _fundamentals_field_names()
+    found: list[str] = []
+
+    def walk(node):
+        if isinstance(node, DataField):
+            if node.name in fund_names:
+                found.append(node.name)
+        elif isinstance(node, FunctionCall):
+            for arg in node.args:
+                walk(arg)
+        elif isinstance(node, BinaryOp):
+            walk(node.left)
+            walk(node.right)
+        elif isinstance(node, UnaryOp):
+            walk(node.operand)
+        # Literal: nothing to do
+
+    walk(ast)
+    return found
 
 
 @app.post("/api/validate")
@@ -1639,6 +1770,32 @@ def validate(request: Request, req: ValidateRequest):
         return {"valid": False, "error": str(e), "diagnostics": []}
 
     diagnostics = lint_ast(ast)
+
+    # Fundamentals coverage gate: if the user references fundamentals fields
+    # but this deployment doesn't have usable coverage, surface as a lint
+    # error rather than letting them hit a confusing "All dates dropped"
+    # backtest failure.  Honest now beats puzzling later.
+    if not _state.get("fundamentals_available", False):
+        fund_refs = _expression_uses_fundamentals(ast)
+        if fund_refs:
+            unique_refs = sorted(set(fund_refs))
+            preview = ", ".join(unique_refs[:3])
+            if len(unique_refs) > 3:
+                preview += f", and {len(unique_refs) - 3} more"
+            coverage = _state.get("fundamentals_coverage_pct", 0.0)
+            diagnostics.append(
+                {
+                    "severity": "error",
+                    "message": (
+                        f"Fundamentals fields ({preview}) are unavailable in this "
+                        f"deployment (yfinance coverage {coverage:.1f}% — needs >="
+                        f"{_FUNDAMENTALS_MIN_COVERAGE:.0f}%). Use price/volume/momentum "
+                        "fields instead, or wire up a paid data source."
+                    ),
+                    "rule": "fundamentals-unavailable",
+                }
+            )
+
     has_lint_errors = any(d["severity"] == "error" for d in diagnostics)
     return {
         "valid": not has_lint_errors,
@@ -1670,6 +1827,27 @@ def simulate(request: Request, req: SimulationRequest):
             status_code=400,
             detail=f"Lint error: {errors[0]['message']}",
         )
+
+    # Mirror the /api/validate fundamentals gate here so direct-API callers
+    # (curl, scripts) get the same clean message instead of the cryptic
+    # downstream "All dates dropped" backtest failure.
+    if not _state.get("fundamentals_available", False):
+        fund_refs = _expression_uses_fundamentals(ast)
+        if fund_refs:
+            unique_refs = sorted(set(fund_refs))
+            preview = ", ".join(unique_refs[:3])
+            if len(unique_refs) > 3:
+                preview += f", and {len(unique_refs) - 3} more"
+            coverage = _state.get("fundamentals_coverage_pct", 0.0)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Fundamentals fields ({preview}) are unavailable in this "
+                    f"deployment (yfinance coverage {coverage:.1f}% — needs >="
+                    f"{_FUNDAMENTALS_MIN_COVERAGE:.0f}%). Use price/volume/momentum "
+                    "fields instead, or wire up a paid data source."
+                ),
+            )
 
     alpha = _evaluate(req.expression)
     # The body's `run_oos` flag wins over anything inside `settings` so
@@ -1788,9 +1966,11 @@ def compare_alphas(request: Request, req: CompareRequest):
     del request  # required-by-name for slowapi
 
     cfg = _make_config(req.settings, run_oos=False)
-    bt = Backtester(_state["data"], SECTOR_MAP)
+    _, gics_map_local, _ = _resolve_universe(req.settings or {})
+    bt = Backtester(_state["data"], sector_map=SECTOR_MAP, gics_map=gics_map_local)
     perf = PerformanceAnalytics()
     spy = _state.get("spy_returns")
+    size_field = _state["data"].get("market_cap") or _state["data"].get("close")
 
     labels = ["A", "B", "C", "D"]
     out_alphas: list[dict[str, Any]] = []
@@ -1818,6 +1998,8 @@ def compare_alphas(request: Request, req: CompareRequest):
                 perf,
                 spy=spy,
                 n_trials=req.n_trials,
+                gics_map=gics_map_local,
+                size_field=size_field,
             )
         except (ValueError, HTTPException) as exc:
             out_alphas.append(

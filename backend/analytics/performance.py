@@ -8,12 +8,14 @@ import pandas as pd
 from engine.backtester import BacktestResult
 
 from analytics.deflated_sharpe import deflated_sharpe
+from analytics.exposure import compute_sector_exposure, compute_size_exposure
 from analytics.ic_metrics import (
     DEFAULT_DECAY_HORIZONS,
     compute_alpha_decay,
     compute_ic_summary,
     compute_rank_stability,
 )
+from analytics.stress_test import compute_stress_metrics
 
 TRADING_DAYS_PER_YEAR = 252
 ROLLING_SHARPE_WINDOW = 63
@@ -121,6 +123,9 @@ class PerformanceAnalytics:
         result: BacktestResult,
         benchmark_returns: pd.Series | None = None,
         n_trials: int = 1,
+        *,
+        gics_map: dict[str, dict[str, str | None]] | None = None,
+        size_field: pd.DataFrame | None = None,
     ) -> dict[str, Any]:
         dates = pd.to_datetime(result.dates)
         daily_returns = pd.Series(result.daily_returns, index=dates).fillna(0.0)
@@ -254,6 +259,29 @@ class PerformanceAnalytics:
         dd_durations = _drawdown_durations(equity)
         fitness_wq = _fitness_wq(sharpe, annual_return, avg_turnover_frac)
 
+        # ---- Tier 2: sector + size exposure, regime stress test ----------
+        sector_exposure: dict[str, Any] | None = None
+        size_exposure: dict[str, Any] | None = None
+        stress_test: list[dict[str, Any]] = []
+        if result.weights is not None and not result.weights.empty:
+            if gics_map is not None:
+                sector_exposure = compute_sector_exposure(result.weights, gics_map)
+            if size_field is not None and not size_field.empty:
+                # Heuristic: if the matrix's max value is < 10_000 it's
+                # almost certainly a price series, not market_cap (which
+                # ranges in the billions).  Flag as approximation so the UI
+                # can mark it.
+                try:
+                    sample_max = float(size_field.abs().to_numpy().max())
+                except (TypeError, ValueError):
+                    sample_max = float("nan")
+                is_approx = not math.isnan(sample_max) and sample_max < 10_000.0
+                size_exposure = compute_size_exposure(
+                    result.weights, size_field, is_approximation=is_approx
+                )
+
+        stress_test = compute_stress_metrics(daily_returns)
+
         # Deflated Sharpe (Bailey & López de Prado): adjusts the headline
         # Sharpe for the selection bias from running ``n_trials`` candidates.
         # Pandas' .skew()/.kurt() return the sample versions; .kurt() is
@@ -307,6 +335,10 @@ class PerformanceAnalytics:
             "positive_months_pct": _safe_float(positive_months_pct),
             "drawdown_durations": dd_durations,
             "fitness_wq": _safe_float(fitness_wq),
+            # Tier 2 — exposure + stress test
+            "sector_exposure": sector_exposure,
+            "size_exposure": size_exposure,
+            "stress_test": stress_test,
             # Date range carried forward so compare_is_oos can build period
             # labels without needing the original BacktestResult.
             "start_date": result.dates[0] if result.dates else None,
