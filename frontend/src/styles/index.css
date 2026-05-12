@@ -1217,6 +1217,90 @@ li.diag-warning .diag-tag { background: rgba(240, 160, 32, 0.25); color: var(--a
 }
 .metric-card .value.good { color: var(--accent-green); }
 .metric-card .value.bad { color: var(--accent-red); }
+.metric-card .sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ============ Signal Quality panel (Tier 1) ============= */
+.signal-quality-section { padding: 16px 18px; }
+.sq-header { margin-bottom: 12px; }
+.sq-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.sq-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.sq-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.sq-decay-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 8px;
+}
+.sq-decay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sq-decay-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+.sq-decay-halflife {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.sq-half-label {
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.sq-half-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  font-size: 14px;
+}
+.sq-half-note {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.sq-decay-svg {
+  width: 100%;
+  max-width: 320px;
+  height: 90px;
+  color: var(--text-primary);
+}
+.sq-decay-axis-label {
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin-top: 2px;
+}
+.sq-decay-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+  padding: 12px 0;
+}
 
 .tooltip {
   position: fixed;
