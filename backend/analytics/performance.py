@@ -8,9 +8,95 @@ import pandas as pd
 from engine.backtester import BacktestResult
 
 from analytics.deflated_sharpe import deflated_sharpe
+from analytics.ic_metrics import (
+    DEFAULT_DECAY_HORIZONS,
+    compute_alpha_decay,
+    compute_ic_summary,
+    compute_rank_stability,
+)
 
 TRADING_DAYS_PER_YEAR = 252
 ROLLING_SHARPE_WINDOW = 63
+
+
+def _tail_ratio(returns: pd.Series) -> float | None:
+    """|95th-percentile return| / |5th-percentile return|.
+
+    >1 means right-skewed payoffs (gains larger than losses at the tails),
+    <1 means left-skewed (crash risk).  None if either tail is degenerate.
+    """
+    if len(returns) < 20:
+        return None
+    q95 = float(returns.quantile(0.95))
+    q5 = float(returns.quantile(0.05))
+    if q5 == 0:
+        return None
+    return abs(q95) / abs(q5)
+
+
+def _positive_months_pct(daily_returns: pd.Series) -> float | None:
+    """Share of calendar months with net-positive return."""
+    if daily_returns.empty:
+        return None
+    monthly = daily_returns.groupby([daily_returns.index.year, daily_returns.index.month]).sum()
+    if len(monthly) == 0:
+        return None
+    return float((monthly > 0).mean())
+
+
+def _drawdown_durations(equity: pd.Series) -> dict[str, float | int | None]:
+    """Avg + max consecutive days underwater.
+
+    "Underwater" = equity < running max, i.e. drawdown < 0.  We collapse the
+    underwater periods into runs and return their mean / max lengths plus
+    the current run (0 if equity is at a new high).
+    """
+    if equity.empty:
+        return {"avg_dd_days": None, "max_dd_days": None, "current_dd_days": 0}
+    running_max = equity.cummax()
+    underwater = (equity < running_max).astype(int).values
+    # Run-length encode: start a new run whenever we transition 0→1
+    runs: list[int] = []
+    cur = 0
+    for u in underwater:
+        if u == 1:
+            cur += 1
+        else:
+            if cur > 0:
+                runs.append(cur)
+            cur = 0
+    current = cur  # tail run, possibly still in progress
+    if runs:
+        avg = float(np.mean(runs))
+        mx = int(max(runs + [current])) if current else int(max(runs))
+    elif current > 0:
+        avg = float(current)
+        mx = int(current)
+    else:
+        return {"avg_dd_days": 0.0, "max_dd_days": 0, "current_dd_days": 0}
+    return {
+        "avg_dd_days": avg,
+        "max_dd_days": mx,
+        "current_dd_days": int(current),
+    }
+
+
+def _fitness_wq(
+    sharpe: float | None, annual_return: float, avg_turnover_frac: float
+) -> float | None:
+    """WorldQuant Brain's Fitness composite.
+
+    ``fitness = sign(returns) * sqrt(|annual_return| / max(turnover, 0.125)) * sharpe``
+
+    The 0.125 floor stops fractional-turnover near zero from blowing up the
+    score.  Sign carries through `annual_return` so loss-making alphas
+    correctly score negative regardless of how good the Sharpe looks.
+    """
+    if sharpe is None:
+        return None
+    turnover_eff = max(abs(avg_turnover_frac), 0.125)
+    sign = 1.0 if annual_return >= 0 else -1.0
+    return sign * math.sqrt(abs(annual_return) / turnover_eff) * sharpe
 
 
 def _safe_float(x) -> float | None:
@@ -138,6 +224,36 @@ class PerformanceAnalytics:
                 }
             )
 
+        # ---- IC / alpha-decay / signal-quality metrics -------------------
+        # These need the post-neutralization signal matrix + per-stock
+        # forward returns.  Older saved BacktestResult objects predate these
+        # fields, so we gracefully degrade to None when they're missing.
+        ic_summary: dict[str, Any] = {
+            "ic": None,
+            "icir": None,
+            "ic_tstat": None,
+            "ic_pct_positive": None,
+            "n_days": 0,
+        }
+        alpha_decay: dict[str, Any] = {
+            "ic_by_horizon": {},
+            "half_life_days": None,
+            "r_squared": None,
+        }
+        rank_stability: float | None = None
+        if result.signal_matrix is not None and result.forward_returns is not None:
+            ic_summary = compute_ic_summary(result.signal_matrix, result.forward_returns, horizon=1)
+            alpha_decay = compute_alpha_decay(
+                result.signal_matrix, result.forward_returns, horizons=DEFAULT_DECAY_HORIZONS
+            )
+            rank_stability = compute_rank_stability(result.signal_matrix)
+
+        # Tail ratio, positive-months %, DD durations
+        tail_ratio = _tail_ratio(daily_returns)
+        positive_months_pct = _positive_months_pct(daily_returns)
+        dd_durations = _drawdown_durations(equity)
+        fitness_wq = _fitness_wq(sharpe, annual_return, avg_turnover_frac)
+
         # Deflated Sharpe (Bailey & López de Prado): adjusts the headline
         # Sharpe for the selection bias from running ``n_trials`` candidates.
         # Pandas' .skew()/.kurt() return the sample versions; .kurt() is
@@ -172,6 +288,25 @@ class PerformanceAnalytics:
             "yearly_returns": yearly_returns,
             "drawdown_series": _safe_list(drawdown.tolist()),
             "deflated_sharpe": deflated,
+            # Signal-quality block (Tier 1 research metrics)
+            "ic": _safe_float(ic_summary.get("ic")),
+            "icir": _safe_float(ic_summary.get("icir")),
+            "ic_tstat": _safe_float(ic_summary.get("ic_tstat")),
+            "ic_pct_positive": _safe_float(ic_summary.get("ic_pct_positive")),
+            "ic_n_days": int(ic_summary.get("n_days") or 0),
+            "alpha_decay": {
+                "ic_by_horizon": {
+                    int(h): _safe_float(v)
+                    for h, v in (alpha_decay.get("ic_by_horizon") or {}).items()
+                },
+                "half_life_days": _safe_float(alpha_decay.get("half_life_days")),
+                "r_squared": _safe_float(alpha_decay.get("r_squared")),
+            },
+            "rank_stability": _safe_float(rank_stability),
+            "tail_ratio": _safe_float(tail_ratio),
+            "positive_months_pct": _safe_float(positive_months_pct),
+            "drawdown_durations": dd_durations,
+            "fitness_wq": _safe_float(fitness_wq),
             # Date range carried forward so compare_is_oos can build period
             # labels without needing the original BacktestResult.
             "start_date": result.dates[0] if result.dates else None,
