@@ -80,6 +80,8 @@ export function createDashboard(container) {
     <div data-role="data-quality" class="data-quality-banner" style="display:none;"></div>
     <div data-role="metrics-grid" class="dashboard"></div>
     <div data-role="signal-quality" class="signal-quality-section glass" style="display:none;"></div>
+    <div data-role="exposure" class="exposure-section glass" style="display:none;"></div>
+    <div data-role="stress-test" class="stress-section glass" style="display:none;"></div>
     <div data-role="deflated" class="deflated-section glass" style="display:none;"></div>
     <div data-role="is-oos" class="is-oos-section glass" style="display:none;"></div>
     <div data-role="yearly-sharpe" class="yearly-section glass" style="display:none;"></div>
@@ -90,6 +92,8 @@ export function createDashboard(container) {
   const dataQualityEl = container.querySelector('[data-role="data-quality"]');
   const metricsGrid = container.querySelector('[data-role="metrics-grid"]');
   const signalQualityEl = container.querySelector('[data-role="signal-quality"]');
+  const exposureEl = container.querySelector('[data-role="exposure"]');
+  const stressEl = container.querySelector('[data-role="stress-test"]');
   const deflatedEl = container.querySelector('[data-role="deflated"]');
   const isOosEl = container.querySelector('[data-role="is-oos"]');
   const yearlyEl = container.querySelector('[data-role="yearly-sharpe"]');
@@ -174,12 +178,33 @@ export function createDashboard(container) {
     // Signal Quality panel: IC / ICIR / alpha decay / rank stability / etc.
     // Hidden if metrics is missing OR if IC didn't compute (older saved
     // results predate the signal_matrix field on BacktestResult).
+    const decompForSQ = opts.factor_decomposition || null;
     if (metrics && metrics.ic != null) {
-      renderSignalQuality(metrics);
+      renderSignalQuality(metrics, decompForSQ);
       signalQualityEl.style.display = '';
     } else {
       signalQualityEl.style.display = 'none';
       signalQualityEl.innerHTML = '';
+    }
+
+    // Tier 2: sector exposure panel (hidden if no GICS or empty)
+    const sectorExp = metrics?.sector_exposure;
+    if (sectorExp && sectorExp.by_sector && Object.keys(sectorExp.by_sector).length) {
+      renderExposure(sectorExp);
+      exposureEl.style.display = '';
+    } else {
+      exposureEl.style.display = 'none';
+      exposureEl.innerHTML = '';
+    }
+
+    // Tier 2: crisis-window stress test
+    const stress = metrics?.stress_test;
+    if (Array.isArray(stress) && stress.length) {
+      renderStress(stress);
+      stressEl.style.display = '';
+    } else {
+      stressEl.style.display = 'none';
+      stressEl.innerHTML = '';
     }
 
     const deflated = metrics?.deflated_sharpe;
@@ -326,7 +351,7 @@ export function createDashboard(container) {
     `;
   }
 
-  function renderSignalQuality(metrics) {
+  function renderSignalQuality(metrics, decomp) {
     // Signal Quality panel — the Tier-1 research metrics that turn a
     // backtest from "did it make money?" into "is this signal real?".
     // Cards grouped: IC quality (top row) + alpha decay (middle, with mini
@@ -428,6 +453,8 @@ export function createDashboard(container) {
           <div class="value">${ddDur.max_dd_days ?? '—'}</div>
           <div class="sub">avg ${ddDur.avg_dd_days != null ? ddDur.avg_dd_days.toFixed(1) : '—'}d</div>
         </div>
+        ${renderSizeCard(metrics)}
+        ${renderBetaCard(decomp)}
       </div>
       <div class="sq-decay-panel">
         <div class="sq-decay-header">
@@ -441,6 +468,127 @@ export function createDashboard(container) {
         ${decaySvg}
         <div class="sq-decay-axis-label">Forward horizon (trading days)</div>
       </div>
+    `;
+  }
+
+  function renderSizeCard(metrics) {
+    // Tier 2: Size factor exposure card.  Hidden cleanly if the metric is
+    // unavailable; flag if it used the close-price approximation.
+    const se = metrics?.size_exposure;
+    if (!se || se.size_corr == null) return '';
+    const v = se.size_corr;
+    const cls = Math.abs(v) < 0.2 ? 'good' : Math.abs(v) < 0.5 ? '' : 'bad';
+    const approxNote = se.is_approximation
+      ? '<div class="sub" style="opacity:.6">via close (proxy)</div>'
+      : '';
+    const tip = 'Daily Pearson corr(weights, log(market_cap)). >0.3 means systematic mega-cap bet; <-0.3 means small-cap tilt. Near 0 = size-neutral.';
+    return `
+      <div class="metric-card glass" title="${tip}">
+        <div class="label">Size Exposure</div>
+        <div class="value ${cls}">${v.toFixed(3)}</div>
+        ${approxNote}
+      </div>
+    `;
+  }
+
+  function renderBetaCard(decomp) {
+    // Tier 2: surface the FF5 Mkt-RF coefficient as a standalone card.
+    // Hidden if the regression didn't run or didn't include Mkt-RF.
+    const c = decomp?.coefficients?.['Mkt-RF'];
+    if (!c || c.coef == null) return '';
+    const b = c.coef;
+    const t = c.tstat;
+    const cls = Math.abs(b) < 0.2 ? 'good' : Math.abs(b) < 0.5 ? '' : 'bad';
+    const tip = 'Beta vs market (Fama-French Mkt-RF factor). For a "market-neutral" alpha this should be ~0; |beta| > 0.3 means significant market exposure.';
+    return `
+      <div class="metric-card glass" title="${tip}">
+        <div class="label">Market Beta</div>
+        <div class="value ${cls}">${b.toFixed(3)}</div>
+        <div class="sub">${t != null ? 't=' + t.toFixed(2) : ''}</div>
+      </div>
+    `;
+  }
+
+  function renderExposure(sectorExp) {
+    // Horizontal bar chart of per-sector net exposure, sorted by magnitude.
+    // Green = long, red = short.  Headline up top calls out the biggest tilt.
+    const entries = Object.entries(sectorExp.by_sector || {})
+      .filter(([, v]) => v && Number.isFinite(v.avg_net))
+      .sort((a, b) => b[1].avg_net - a[1].avg_net);
+
+    if (!entries.length) {
+      exposureEl.innerHTML = '';
+      return;
+    }
+
+    const maxAbs = Math.max(0.01, ...entries.map(([, v]) => Math.abs(v.avg_net)));
+    const rows = entries.map(([name, v]) => {
+      const net = v.avg_net;
+      const widthPct = (Math.abs(net) / maxAbs) * 100;
+      const tone = net >= 0 ? 'pos' : 'neg';
+      const label = name.length > 28 ? name.slice(0, 27) + '…' : name;
+      // Each row: sector label on the left, bar in the middle, signed value
+      // on the right.  Layout uses a 3-col grid so labels align across rows.
+      return `
+        <div class="exp-row" title="${name} · n=${v.n_tickers} · gross ${(v.avg_gross * 100).toFixed(2)}%">
+          <div class="exp-label">${label}</div>
+          <div class="exp-bar-track">
+            <div class="exp-bar exp-bar-${tone}" style="width:${widthPct}%;"></div>
+          </div>
+          <div class="exp-value exp-value-${tone}">${(net * 100).toFixed(2)}%</div>
+        </div>
+      `;
+    }).join('');
+
+    const h = sectorExp.headline || {};
+    const headlineText = h.max_long_sector
+      ? `Hidden tilt: long <b>${h.max_long_sector}</b> ${(h.max_long_exposure * 100).toFixed(1)}%` +
+        (h.max_short_sector ? ` / short <b>${h.max_short_sector}</b> ${(Math.abs(h.max_short_exposure) * 100).toFixed(1)}%` : '')
+      : 'No directional sector tilt';
+
+    exposureEl.innerHTML = `
+      <div class="exp-header">
+        <div class="exp-title">Sector Exposure</div>
+        <div class="exp-subtitle">Net long/short per GICS sector — exposes hidden thematic bets</div>
+      </div>
+      <div class="exp-headline">${headlineText}</div>
+      <div class="exp-rows">${rows}</div>
+    `;
+  }
+
+  function renderStress(regimes) {
+    // Crisis-window performance table.  One row per regime that overlapped
+    // the backtest's date range.  Sharpe colored by severity.
+    const rows = regimes.map((r) => {
+      const sharpe = r.sharpe;
+      const sev = sharpe == null ? 'warn'
+        : sharpe >= 0.5 ? 'good'
+        : sharpe >= -0.5 ? 'warn'
+        : 'bad';
+      const sharpeStr = sharpe == null ? '—' : sharpe.toFixed(2);
+      const totalStr = r.total_return != null ? (r.total_return * 100).toFixed(2) + '%' : '—';
+      const ddStr = r.max_drawdown != null ? (r.max_drawdown * 100).toFixed(2) + '%' : '—';
+      const hitStr = r.hit_rate != null ? (r.hit_rate * 100).toFixed(0) + '%' : '—';
+      return `
+        <div class="stress-row stress-sev-${sev}">
+          <div class="stress-label">
+            <div class="stress-name">${r.label}</div>
+            <div class="stress-period">${r.start} → ${r.end} · ${r.n_days}d</div>
+          </div>
+          <div class="stress-metric"><span class="stress-key">Sharpe</span><span class="stress-val stress-val-${sev}">${sharpeStr}</span></div>
+          <div class="stress-metric"><span class="stress-key">Return</span><span class="stress-val">${totalStr}</span></div>
+          <div class="stress-metric"><span class="stress-key">Max DD</span><span class="stress-val">${ddStr}</span></div>
+          <div class="stress-metric"><span class="stress-key">Hit %</span><span class="stress-val">${hitStr}</span></div>
+        </div>
+      `;
+    }).join('');
+
+    stressEl.innerHTML = `
+      <div class="stress-header">
+        <div class="stress-title">Crisis Performance</div>
+        <div class="stress-subtitle">How the alpha behaved in well-known stress windows — a single overall Sharpe averages these regimes together.</div>
+      </div>
+      <div class="stress-rows">${rows}</div>
     `;
   }
 

@@ -165,3 +165,5 @@ temp/
 # bloats the repo with binary churn. Use a persistent disk / Docker volume
 # in production to avoid the cold-start re-download penalty.
 backend/data/cache/
+# Timestamped cache backups created when invalidating stale data.  Local-only.
+backend/data/cache_backup_*/
