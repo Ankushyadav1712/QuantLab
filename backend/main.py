@@ -1337,6 +1337,16 @@ _METRIC_KEYS = (
     "profit_factor",
     "beta",
     "information_ratio",
+    # Tier 1 signal-quality metrics
+    "ic",
+    "icir",
+    "ic_tstat",
+    "ic_pct_positive",
+    "ic_n_days",
+    "rank_stability",
+    "tail_ratio",
+    "positive_months_pct",
+    "fitness_wq",
 )
 
 
@@ -1357,6 +1367,10 @@ def _compute_perf_pack(
     metrics["yearly_returns"] = full.get("yearly_returns", [])
     # Deflated Sharpe carries its own dict (sharpe + p-value + threshold)
     metrics["deflated_sharpe"] = full.get("deflated_sharpe")
+    # Alpha-decay carries its own dict (ic_by_horizon + half_life_days + r²)
+    metrics["alpha_decay"] = full.get("alpha_decay")
+    # Drawdown durations: avg/max/current days underwater
+    metrics["drawdown_durations"] = full.get("drawdown_durations")
 
     timeseries = {
         "dates": list(result.dates),

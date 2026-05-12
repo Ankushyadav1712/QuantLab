@@ -79,6 +79,7 @@ export function createDashboard(container) {
   container.innerHTML = `
     <div data-role="data-quality" class="data-quality-banner" style="display:none;"></div>
     <div data-role="metrics-grid" class="dashboard"></div>
+    <div data-role="signal-quality" class="signal-quality-section glass" style="display:none;"></div>
     <div data-role="deflated" class="deflated-section glass" style="display:none;"></div>
     <div data-role="is-oos" class="is-oos-section glass" style="display:none;"></div>
     <div data-role="yearly-sharpe" class="yearly-section glass" style="display:none;"></div>
@@ -88,6 +89,7 @@ export function createDashboard(container) {
 
   const dataQualityEl = container.querySelector('[data-role="data-quality"]');
   const metricsGrid = container.querySelector('[data-role="metrics-grid"]');
+  const signalQualityEl = container.querySelector('[data-role="signal-quality"]');
   const deflatedEl = container.querySelector('[data-role="deflated"]');
   const isOosEl = container.querySelector('[data-role="is-oos"]');
   const yearlyEl = container.querySelector('[data-role="yearly-sharpe"]');
@@ -167,6 +169,17 @@ export function createDashboard(container) {
       const cls = m.classify(v);
       if (cls) valueEl.classList.add(cls);
       animateNumber(valueEl, v, m.format);
+    }
+
+    // Signal Quality panel: IC / ICIR / alpha decay / rank stability / etc.
+    // Hidden if metrics is missing OR if IC didn't compute (older saved
+    // results predate the signal_matrix field on BacktestResult).
+    if (metrics && metrics.ic != null) {
+      renderSignalQuality(metrics);
+      signalQualityEl.style.display = '';
+    } else {
+      signalQualityEl.style.display = 'none';
+      signalQualityEl.innerHTML = '';
     }
 
     const deflated = metrics?.deflated_sharpe;
@@ -309,6 +322,124 @@ export function createDashboard(container) {
         A signal that genuinely generalizes shows mostly positive bars with similar height.
         Highly variable bars (large negatives or extremes) suggest the alpha is regime-dependent
         rather than persistent.
+      </div>
+    `;
+  }
+
+  function renderSignalQuality(metrics) {
+    // Signal Quality panel — the Tier-1 research metrics that turn a
+    // backtest from "did it make money?" into "is this signal real?".
+    // Cards grouped: IC quality (top row) + alpha decay (middle, with mini
+    // chart) + payoff shape & DD duration (bottom).
+    const ic = metrics.ic ?? 0;
+    const icir = metrics.icir;
+    const icT = metrics.ic_tstat;
+    const icPctPos = metrics.ic_pct_positive;
+    const icDays = metrics.ic_n_days ?? 0;
+    const rankStab = metrics.rank_stability;
+    const tailRatio = metrics.tail_ratio;
+    const posMonths = metrics.positive_months_pct;
+    const fitnessWq = metrics.fitness_wq;
+    const decay = metrics.alpha_decay || {};
+    const ddDur = metrics.drawdown_durations || {};
+
+    const icClass = ic > 0.03 ? 'good' : ic < 0 ? 'bad' : '';
+    const icirClass = icir != null && icir > 0.5 ? 'good' : icir != null && icir < 0 ? 'bad' : '';
+    const tailClass = tailRatio != null && tailRatio > 1 ? 'good' : tailRatio != null && tailRatio < 0.7 ? 'bad' : '';
+    const posMonthsClass = posMonths != null && posMonths > 0.6 ? 'good' : posMonths != null && posMonths < 0.4 ? 'bad' : '';
+    const fitnessWqClass = fitnessWq != null && fitnessWq > 0.5 ? 'good' : fitnessWq != null && fitnessWq < 0 ? 'bad' : '';
+
+    // Inline IC decay mini-chart (SVG bars at horizons 1,2,3,5,10,21)
+    const horizonIcs = decay.ic_by_horizon || {};
+    const horizons = Object.keys(horizonIcs).map((h) => Number(h)).sort((a, b) => a - b);
+    let decaySvg = '<div class="sq-decay-empty">Decay fit unavailable (signal noise dominates)</div>';
+    if (horizons.length >= 2) {
+      const values = horizons.map((h) => horizonIcs[h] ?? 0);
+      const maxAbs = Math.max(0.01, ...values.map((v) => Math.abs(v)));
+      const W = 260;
+      const H = 80;
+      const barW = (W - 20) / horizons.length;
+      const bars = horizons.map((h, i) => {
+        const v = values[i] ?? 0;
+        const heightPx = (Math.abs(v) / maxAbs) * (H / 2 - 8);
+        const x = 10 + i * barW + 4;
+        const w = barW - 8;
+        const y = v >= 0 ? H / 2 - heightPx : H / 2;
+        const color = v >= 0 ? 'var(--accent-cyan, #4dd0e1)' : 'var(--accent-rose, #f06292)';
+        return `<rect x="${x}" y="${y}" width="${w}" height="${heightPx}" fill="${color}"></rect>
+                <text x="${x + w / 2}" y="${H - 2}" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.6">${h}d</text>`;
+      }).join('');
+      decaySvg = `
+        <svg viewBox="0 0 ${W} ${H}" class="sq-decay-svg">
+          <line x1="10" y1="${H / 2}" x2="${W - 4}" y2="${H / 2}" stroke="currentColor" stroke-opacity="0.2"></line>
+          ${bars}
+        </svg>
+      `;
+    }
+
+    const halfLife = decay.half_life_days;
+    const halfLifeText = halfLife != null
+      ? `${halfLife.toFixed(1)} days`
+      : '—';
+    const halfLifeNote = halfLife == null
+      ? 'IC pattern not fit by exponential decay'
+      : halfLife < 5 ? 'Fast alpha — rebalance often'
+      : halfLife < 21 ? 'Medium horizon'
+      : 'Slow alpha — low turnover OK';
+
+    signalQualityEl.innerHTML = `
+      <div class="sq-header">
+        <div class="sq-title">Signal Quality</div>
+        <div class="sq-subtitle">Cross-sectional prediction lens — does the ranking actually predict next-day returns?</div>
+      </div>
+      <div class="sq-grid">
+        <div class="metric-card glass" title="Mean daily rank correlation between signal and next-day return. >0.03 is the industry pass bar.">
+          <div class="label">IC (Rank)</div>
+          <div class="value ${icClass}">${ic.toFixed(4)}</div>
+          <div class="sub">over ${icDays} days</div>
+        </div>
+        <div class="metric-card glass" title="ICIR = mean(IC) / std(IC) × √252. Stability of the predictive power. >0.5 is solid.">
+          <div class="label">ICIR</div>
+          <div class="value ${icirClass}">${icir != null ? icir.toFixed(2) : '—'}</div>
+          <div class="sub">${icT != null ? `t=${icT.toFixed(2)}` : ''}</div>
+        </div>
+        <div class="metric-card glass" title="Share of days with positive IC. Complement to ICIR — high % positive + reasonable mean = persistent edge.">
+          <div class="label">IC % Positive</div>
+          <div class="value">${icPctPos != null ? (icPctPos * 100).toFixed(1) + '%' : '—'}</div>
+        </div>
+        <div class="metric-card glass" title="Day-over-day Spearman of cross-sectional ranks. 1.0 = stable ranking, 0 = reshuffles randomly.">
+          <div class="label">Rank Stability</div>
+          <div class="value">${rankStab != null ? rankStab.toFixed(3) : '—'}</div>
+        </div>
+        <div class="metric-card glass" title="WorldQuant fitness: sign × √(|return|/max(turnover,0.125)) × Sharpe. Brain's composite signal-quality score.">
+          <div class="label">Fitness (WQ)</div>
+          <div class="value ${fitnessWqClass}">${fitnessWq != null ? fitnessWq.toFixed(3) : '—'}</div>
+        </div>
+        <div class="metric-card glass" title="|95th-pct return| / |5th-pct return|. >1 means asymmetric gains, <1 means crash-tail risk.">
+          <div class="label">Tail Ratio</div>
+          <div class="value ${tailClass}">${tailRatio != null ? tailRatio.toFixed(2) : '—'}</div>
+        </div>
+        <div class="metric-card glass" title="Share of calendar months with net-positive return. More robust to autocorrelation than headline Sharpe.">
+          <div class="label">Positive Months</div>
+          <div class="value ${posMonthsClass}">${posMonths != null ? (posMonths * 100).toFixed(1) + '%' : '—'}</div>
+        </div>
+        <div class="metric-card glass" title="Longest underwater stretch. Depth (Max DD) without duration hides whether recovery is days or months.">
+          <div class="label">Max DD Days</div>
+          <div class="value">${ddDur.max_dd_days ?? '—'}</div>
+          <div class="sub">avg ${ddDur.avg_dd_days != null ? ddDur.avg_dd_days.toFixed(1) : '—'}d</div>
+        </div>
+      </div>
+      <div class="sq-decay-panel">
+        <div class="sq-decay-header">
+          <div class="sq-decay-title">Alpha decay across horizons</div>
+          <div class="sq-decay-halflife">
+            <span class="sq-half-label">Half-life</span>
+            <span class="sq-half-value">${halfLifeText}</span>
+            <span class="sq-half-note">${halfLifeNote}</span>
+          </div>
+        </div>
+        ${decaySvg}
+        <div class="sq-decay-axis-label">Forward horizon (trading days)</div>
       </div>
     `;
   }
