@@ -5,7 +5,9 @@ import { api } from './api.js';
 import { createEditor } from './components/editor.js';
 import { createDashboard } from './components/dashboard.js';
 import { createCharts } from './components/charts.js';
+import { createPortfolioAnalysis } from './components/portfolio_analysis.js';
 import { createSidebar } from './components/sidebar.js';
+import { openTearsheet } from './components/tearsheet.js';
 import { createComparison } from './components/comparison.js';
 import { createCorrelation } from './components/correlation.js';
 import { createSweepResults } from './components/sweep.js';
@@ -34,6 +36,7 @@ root.innerHTML = `
           </svg>
         </button>
         <button type="button" id="op-docs-btn">Operator Docs</button>
+        <button type="button" id="export-tearsheet-btn" title="Print or save the current backtest as a PDF tearsheet" disabled>Export PDF</button>
       </div>
     </header>
     <div id="sidebar-scrim" class="sidebar-scrim" aria-hidden="true"></div>
@@ -45,6 +48,7 @@ root.innerHTML = `
       <section id="charts"></section>
       <section id="comparison"></section>
       <section id="correlation"></section>
+      <section id="portfolio-analysis"></section>
     </main>
   </div>
 `;
@@ -56,6 +60,9 @@ const sidebar = createSidebar(document.getElementById('sidebar'));
 const correlation = createCorrelation(document.getElementById('correlation'));
 const comparison = createComparison(document.getElementById('comparison'));
 const sweep = createSweepResults(document.getElementById('sweep'));
+const portfolioAnalysis = createPortfolioAnalysis(
+  document.getElementById('portfolio-analysis')
+);
 
 // ---------- State ----------
 
@@ -361,6 +368,23 @@ sidebar.setOnCorrelate(async (ids) => {
 });
 
 sidebar.refresh();
+portfolioAnalysis.refresh();
+// Refresh the Pareto chart whenever the saved-alphas list mutates.
+sidebar.setOnDelete(() => portfolioAnalysis.refresh());
+
+// Selecting an alpha on the Pareto chart loads it into the editor — same
+// shortcut as clicking it in the sidebar list.
+portfolioAnalysis.setOnSelectAlpha(async (id) => {
+  try {
+    const alpha = await api.getAlpha(id);
+    if (alpha?.expression) {
+      editor.setExpression(alpha.expression);
+      toast(`Loaded '${alpha.name}' into editor`, 'success', { duration: 2000 });
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+});
 
 // ---------- Mobile sidebar drawer ----------
 // Below ~720px the sidebar is off-canvas; this hamburger + scrim toggle it.
@@ -500,6 +524,14 @@ async function runSampleAlpha() {
 // ---------- Operator Docs modal ----------
 
 document.getElementById('op-docs-btn').addEventListener('click', openOperatorDocs);
+
+document.getElementById('export-tearsheet-btn').addEventListener('click', () => {
+  if (!lastResponse) {
+    toast('Run a backtest first, then export.', 'warning');
+    return;
+  }
+  openTearsheet(lastResponse);
+});
 
 let cachedOperators = null;
 
@@ -662,6 +694,7 @@ function openSaveModal(response) {
             );
             closeModal();
             await sidebar.refresh();
+            portfolioAnalysis.refresh();
             editor.setSaveEnabled(false);
             toast(`Saved as "${name}"`, 'success');
           } catch (e) {
@@ -717,6 +750,9 @@ document.addEventListener('keydown', (e) => {
 
 function renderResponse(resp) {
   lastResponse = resp;
+  // Enable the Export button now that a backtest result is available.
+  const exportBtn = document.getElementById('export-tearsheet-btn');
+  if (exportBtn) exportBtn.disabled = false;
   // New shape carries IS/OOS pairs.  Old saved-alpha records (pre-OOS) used
   // flat `metrics`/`timeseries` keys — fall back to those so loading legacy
   // alphas from the sidebar still renders the dashboard.

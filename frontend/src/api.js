@@ -61,6 +61,9 @@ export const api = {
     request('POST', '/api/sweep', { expression, settings, max_combinations }),
   getCorrelations: (ids) =>
     request('POST', '/api/alphas/correlations', { alpha_ids: ids }),
+  getParetoAlphas: () => request('GET', '/api/alphas/pareto'),
+  getDiversificationCurve: (samples = 20) =>
+    request('GET', `/api/alphas/diversification_curve?samples=${samples}`),
   getOperators: () => request('GET', '/api/operators'),
   getUniverse: () => request('GET', '/api/universe'),
   getUniverses: () => request('GET', '/api/universes'),
