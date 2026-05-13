@@ -12,7 +12,15 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from analytics.diversification import (
+    DEFAULT_SIZES as _DIV_DEFAULT_SIZES,
+)
+from analytics.diversification import (
+    diversification_curve,
+    extract_daily_returns_from_saved,
+)
 from analytics.factor_decomp import FactorDecomposition
+from analytics.pareto import compute_pareto
 from analytics.performance import PerformanceAnalytics, _safe_float, _safe_list
 from config import (
     ALLOWED_ORIGINS,
@@ -2180,6 +2188,63 @@ async def list_alphas():
         )
         rows = await cursor.fetchall()
     return [dict(r) for r in rows]
+
+
+@app.get("/api/alphas/diversification_curve")
+async def alphas_diversification_curve(samples: int = 20, limit: int = 50):
+    """Sample ensemble Sharpe across portfolio sizes 1..21 (clamped to pool).
+
+    Reads up to ``limit`` most-recent saved alphas, parses their is_timeseries
+    daily_returns from the SQLite result_json blob, and runs random-subset
+    sampling.  The output curve answers "how many alphas do I really need
+    before diversification benefit plateaus?"
+    """
+    samples = max(2, min(int(samples), 100))  # bound to keep the request bounded
+    limit = max(2, min(int(limit), 200))
+    async with connect() as db:
+        db.row_factory = __import__("aiosqlite").Row
+        cursor = await db.execute(
+            "SELECT id, name, result_json FROM alphas ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+    saved = [dict(r) for r in rows]
+    pnl_map = extract_daily_returns_from_saved(saved)
+    curve = diversification_curve(pnl_map, sizes=_DIV_DEFAULT_SIZES, n_samples=samples)
+    return {
+        "curve": curve,
+        "n_alphas_with_pnl": len(pnl_map),
+        "n_alphas_total": len(saved),
+        "n_samples_per_size": samples,
+    }
+
+
+@app.get("/api/alphas/pareto")
+async def alphas_pareto():
+    """Annotate every saved alpha with ``is_pareto`` on the Sharpe-vs-turnover
+    plane.  Useful for the portfolio-analysis pane to show which alphas
+    are dominated (delete-candidates) vs which sit on the trade-off
+    frontier.  See ``analytics/pareto.py`` for the dominance rule."""
+    async with connect() as db:
+        db.row_factory = __import__("aiosqlite").Row
+        cursor = await db.execute(
+            """
+            SELECT id, name, expression, sharpe, annual_return,
+                   max_drawdown, turnover, fitness, created_at
+            FROM alphas
+            ORDER BY id DESC
+            """
+        )
+        rows = await cursor.fetchall()
+    alphas = [dict(r) for r in rows]
+    annotated = compute_pareto(alphas)
+    n_pareto = sum(1 for a in annotated if a.get("is_pareto"))
+    return {
+        "alphas": annotated,
+        "n_total": len(annotated),
+        "n_pareto": n_pareto,
+        "n_dominated": len(annotated) - n_pareto,
+    }
 
 
 @app.get("/api/alphas/{alpha_id}")

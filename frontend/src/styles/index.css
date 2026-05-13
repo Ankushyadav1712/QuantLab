@@ -1429,6 +1429,332 @@ li.diag-warning .diag-tag { background: rgba(240, 160, 32, 0.25); color: var(--a
 .stress-val-bad  { color: var(--accent-red, #ef5350); }
 .stress-val-warn { color: var(--text-primary); }
 
+/* ============ Tier 3: Portfolio Analysis (Pareto frontier) ============ */
+.portfolio-pane {
+  padding: 16px 18px;
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+}
+.pa-header { margin-bottom: 10px; }
+.pa-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.pa-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.pa-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+  padding: 16px 8px;
+  text-align: center;
+}
+.pa-stats {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.pa-stats b { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.pa-good  { color: var(--accent-green, #66bb6a); }
+.pa-muted { color: var(--text-secondary); }
+.pa-stat-sep { color: var(--text-secondary); opacity: 0.6; }
+.pa-chart-wrap {
+  width: 100%;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.02));
+  border-radius: 4px;
+  padding: 4px;
+}
+.pa-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+}
+.pa-axis {
+  stroke: currentColor;
+  stroke-opacity: 0.4;
+  stroke-width: 1;
+}
+.pa-grid {
+  stroke: currentColor;
+  stroke-opacity: 0.06;
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+.pa-tick {
+  stroke: currentColor;
+  stroke-opacity: 0.4;
+}
+.pa-zero {
+  stroke: currentColor;
+  stroke-opacity: 0.25;
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+.pa-tick-label {
+  fill: currentColor;
+  fill-opacity: 0.6;
+  font-size: 10px;
+}
+.pa-frontier {
+  stroke: var(--accent-green, #66bb6a);
+  stroke-opacity: 0.5;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+.pa-dot-svg {
+  cursor: pointer;
+  transition: r 120ms ease;
+}
+.pa-dot-svg:hover { r: 7; }
+.pa-dot-pareto {
+  fill: var(--accent-green, #66bb6a);
+  stroke: var(--accent-green, #66bb6a);
+  stroke-width: 2;
+  fill-opacity: 0.9;
+}
+.pa-dot-dominated {
+  fill: transparent;
+  stroke: var(--text-secondary);
+  stroke-opacity: 0.6;
+  stroke-width: 1.5;
+}
+.pa-legend {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+.pa-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.pa-legend-axis { opacity: 0.6; margin-left: auto; }
+.pa-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.pa-dot.pa-dot-pareto    { background: var(--accent-green, #66bb6a); }
+.pa-dot.pa-dot-dominated { background: transparent; border: 1.5px solid var(--text-secondary); }
+.pa-dot.pa-dot-line      { background: var(--accent-cyan, #4dd0e1); border-radius: 2px; width: 12px; height: 3px; }
+.pa-dot.pa-dot-band      { background: var(--accent-cyan, #4dd0e1); opacity: 0.25; border-radius: 2px; width: 12px; height: 8px; }
+
+/* ============ Tier 3: Tearsheet (print-only) ============ */
+/* The tearsheet host is always in the DOM but only visible during print
+ * (or when `body.tearsheet-active` is on for debugging).  Print stylesheet
+ * hides the rest of the app so only the tearsheet renders. */
+#tearsheet { display: none; }
+body.tearsheet-active #tearsheet { display: block; }
+
+@media print {
+  /* Force light theme: PDFs are read on white paper / white-background readers */
+  body, #app, .main, .dashboard-wrap {
+    background: white !important;
+    color: black !important;
+  }
+  /* Hide everything except the tearsheet host */
+  body > *:not(#tearsheet) { display: none !important; }
+  #tearsheet { display: block !important; }
+
+  @page {
+    size: letter;
+    margin: 0.5in;
+  }
+}
+
+/* Tearsheet visual layout (applies in both screen-preview and print).
+ * Kept theme-neutral with dark text + thin borders so print rendering
+ * is identical to the screen preview. */
+.ts-page {
+  font-family: 'Inter', sans-serif;
+  color: #111;
+  background: white;
+  padding: 8px;
+  max-width: 7.5in;
+  margin: 0 auto;
+  font-size: 11pt;
+}
+.ts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 2px solid #111;
+  padding-bottom: 6px;
+  margin-bottom: 12px;
+}
+.ts-brand { font-size: 16pt; font-weight: 700; }
+.ts-meta { font-size: 10pt; color: #555; font-family: 'JetBrains Mono', monospace; }
+
+.ts-alpha-box {
+  background: #f7f7f7;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 10px;
+  margin-bottom: 16px;
+}
+.ts-alpha-label {
+  font-size: 9pt;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.ts-alpha-expr {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12pt;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ts-context { font-size: 10pt; color: #444; }
+.ts-context b { color: #111; }
+
+.ts-section {
+  margin-bottom: 14px;
+  break-inside: avoid;
+}
+.ts-section h3 {
+  font-size: 12pt;
+  margin: 0 0 6px 0;
+  padding-bottom: 3px;
+  border-bottom: 1px solid #ccc;
+}
+
+.ts-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.ts-grid-headline { grid-template-columns: repeat(4, 1fr); }
+
+.ts-metric {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: #fafafa;
+}
+.ts-metric-label {
+  font-size: 8.5pt;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ts-metric-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14pt;
+  font-weight: 600;
+  margin-top: 3px;
+}
+.ts-metric-sub {
+  font-size: 8pt;
+  color: #888;
+  margin-top: 2px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.ts-note {
+  font-size: 10pt;
+  padding: 4px 8px;
+  background: #f0f0f0;
+  border-radius: 3px;
+  margin-bottom: 6px;
+}
+
+.ts-exp-rows { display: flex; flex-direction: column; gap: 3px; }
+.ts-exp-row {
+  display: grid;
+  grid-template-columns: 170px 1fr 60px;
+  align-items: center;
+  gap: 8px;
+  font-size: 9.5pt;
+}
+.ts-exp-label { color: #444; }
+.ts-exp-bar-track {
+  height: 10px;
+  background: #eee;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.ts-exp-bar { height: 100%; border-radius: 2px; }
+.ts-exp-bar-pos { background: #2e7d32; }
+.ts-exp-bar-neg { background: #c62828; }
+.ts-exp-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9pt;
+  text-align: right;
+}
+.ts-exp-val-pos { color: #2e7d32; }
+.ts-exp-val-neg { color: #c62828; }
+
+.ts-stress-table, .ts-factor-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 9.5pt;
+}
+.ts-stress-table th, .ts-stress-table td,
+.ts-factor-table th, .ts-factor-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+}
+.ts-stress-table th, .ts-factor-table th {
+  background: #f0f0f0;
+  font-weight: 600;
+  font-size: 9pt;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ts-stress-num, .ts-num { text-align: right; font-family: 'JetBrains Mono', monospace; }
+.ts-stress-period { color: #666; font-family: 'JetBrains Mono', monospace; font-size: 9pt; }
+.ts-stress-good { color: #2e7d32; }
+.ts-stress-bad  { color: #c62828; }
+.ts-stress-warn { color: #ef6c00; }
+
+.ts-footer {
+  margin-top: 16px;
+  padding-top: 8px;
+  border-top: 1px solid #ddd;
+  font-size: 8.5pt;
+  color: #777;
+  text-align: center;
+}
+
+/* Section divider between Pareto + Diversification panels */
+.pa-section-divider {
+  border-top: 1px dashed var(--border, rgba(255, 255, 255, 0.08));
+  margin: 16px 0 14px 0;
+}
+.pa-div-band {
+  fill: var(--accent-cyan, #4dd0e1);
+  fill-opacity: 0.15;
+  stroke: none;
+}
+.pa-div-line {
+  stroke: var(--accent-cyan, #4dd0e1);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  fill: none;
+}
+.pa-div-dot {
+  fill: var(--accent-cyan, #4dd0e1);
+  stroke: var(--accent-cyan, #4dd0e1);
+  stroke-width: 1;
+}
+
 .tooltip {
   position: fixed;
   background: var(--bg-tertiary);
