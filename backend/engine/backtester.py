@@ -79,6 +79,14 @@ class SimulationConfig:
     # stable; opt in via the editor's settings panel.
     point_in_time_universe: bool = False
 
+    # ADV liquidity filter (PDF Section 9.2).  When > 0, on each date any
+    # ticker whose 20-day average dollar volume is below this threshold is
+    # NaN-ed out of the alpha matrix before sizing — so the backtest can't
+    # claim PnL from stocks it couldn't actually have traded that day.
+    # Brain's US3000 approximation uses ``adv20 > $1M``; pass 1_000_000.0
+    # for parity.  Default 0.0 = no filter (backwards compatible).
+    min_adv_dollars: float = 0.0
+
 
 @dataclass
 class BacktestResult:
@@ -184,6 +192,24 @@ class Backtester:
         if config.point_in_time_universe:
             mask = build_membership_mask(pd.DatetimeIndex(alpha.index), list(alpha.columns))
             alpha = alpha.where(mask, other=0.0)
+
+        # ADV liquidity gating: NaN out alpha cells where the 20-day average
+        # dollar volume is below the threshold on that date.  Done after PIT
+        # gating (since PIT zeros are valid trades for "in-index" stocks)
+        # but before decay/neutralization so masked cells don't leak through
+        # rolling operations downstream.
+        if config.min_adv_dollars > 0:
+            adv = self.data.get("adv20")
+            if adv is None:
+                # Compute it on the fly from dollar_volume so the filter still
+                # works in test contexts that don't pre-load adv20.
+                dv = self.data.get("dollar_volume")
+                if dv is not None:
+                    adv = dv.rolling(20, min_periods=1).mean()
+            if adv is not None:
+                adv_aligned = adv.reindex(index=alpha.index, columns=alpha.columns)
+                liquid_mask = adv_aligned >= config.min_adv_dollars
+                alpha = alpha.where(liquid_mask, other=np.nan)
 
         # Optional decay before trading
         if config.decay and config.decay > 0:

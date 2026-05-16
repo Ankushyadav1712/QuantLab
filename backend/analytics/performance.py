@@ -7,8 +7,14 @@ import numpy as np
 import pandas as pd
 from engine.backtester import BacktestResult
 
+from analytics.attribution import compute_pnl_attribution
 from analytics.deflated_sharpe import deflated_sharpe
-from analytics.exposure import compute_sector_exposure, compute_size_exposure
+from analytics.exposure import (
+    compute_market_cap_distribution,
+    compute_sector_exposure,
+    compute_sector_exposure_timeseries,
+    compute_size_exposure,
+)
 from analytics.ic_metrics import (
     DEFAULT_DECAY_HORIZONS,
     compute_alpha_decay,
@@ -304,11 +310,27 @@ class PerformanceAnalytics:
 
         # ---- Tier 2: sector + size exposure, regime stress test ----------
         sector_exposure: dict[str, Any] | None = None
+        sector_exposure_timeseries: dict[str, Any] | None = None
         size_exposure: dict[str, Any] | None = None
+        market_cap_distribution: dict[str, Any] | None = None
+        pnl_attribution: dict[str, Any] | None = None
         stress_test: list[dict[str, Any]] = []
         if result.weights is not None and not result.weights.empty:
             if gics_map is not None:
                 sector_exposure = compute_sector_exposure(result.weights, gics_map)
+                # PDF Section 5.3.2 — per-date per-sector heatmap data.
+                # Downsampled to ~120 buckets so the payload stays bounded.
+                sector_exposure_timeseries = compute_sector_exposure_timeseries(
+                    result.weights, gics_map
+                )
+                # PDF Section 5.2 — Brinson-style allocation vs selection
+                # split.  Only meaningful when both GICS map and per-stock
+                # forward returns are available; older saved results that
+                # lack forward_returns get None.
+                if result.forward_returns is not None:
+                    pnl_attribution = compute_pnl_attribution(
+                        result.weights, result.forward_returns, gics_map
+                    )
             if size_field is not None and not size_field.empty:
                 # Heuristic: if the matrix's max value is < 10_000 it's
                 # almost certainly a price series, not market_cap (which
@@ -320,6 +342,12 @@ class PerformanceAnalytics:
                     sample_max = float("nan")
                 is_approx = not math.isnan(sample_max) and sample_max < 10_000.0
                 size_exposure = compute_size_exposure(
+                    result.weights, size_field, is_approximation=is_approx
+                )
+                # PDF Section 5.3.4: per-decile $ exposure on long vs short
+                # side.  Same approximation flag as size_exposure since both
+                # share the size_field heuristic above.
+                market_cap_distribution = compute_market_cap_distribution(
                     result.weights, size_field, is_approximation=is_approx
                 )
 
@@ -389,7 +417,17 @@ class PerformanceAnalytics:
             "net_exposure": _safe_float(net_exposure),
             # Tier 2 — exposure + stress test
             "sector_exposure": sector_exposure,
+            # PDF Section 5.3.2 — sector × time matrix for the heatmap chart.
+            # Downsampled (default ~120 buckets) so payload stays bounded
+            # across long backtests.
+            "sector_exposure_timeseries": sector_exposure_timeseries,
             "size_exposure": size_exposure,
+            # PDF Section 5.3.4 — per-decile $ on long vs short side, reveals
+            # size tilt that the single-scalar size_corr summarises.
+            "market_cap_distribution": market_cap_distribution,
+            # PDF Section 5.2 — Brinson allocation vs selection split.
+            # None when forward_returns is unavailable (old saved results).
+            "pnl_attribution": pnl_attribution,
             "stress_test": stress_test,
             # Date range carried forward so compare_is_oos can build period
             # labels without needing the original BacktestResult.
