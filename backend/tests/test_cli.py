@@ -20,11 +20,23 @@ from cli.verify import StoredAlpha, VerifyOutcome, _changed
 # ---------- parser wiring ----------
 
 
-def test_parser_has_all_four_subcommands():
+def test_parser_has_all_eight_subcommands():
+    """After the PDF parity pass, the CLI ships eight subcommands.  Update
+    this test (and __main__.py's add_subparser block) together whenever a
+    new one lands."""
     p = build_parser()
     # argparse exposes registered subparser names through the choices dict
     sub_action = next(a for a in p._subparsers._actions if a.dest == "command")
-    assert set(sub_action.choices.keys()) == {"run", "shuffle", "list", "verify"}
+    assert set(sub_action.choices.keys()) == {
+        "run",
+        "shuffle",
+        "list",
+        "verify",
+        "compare",
+        "stress",
+        "optimize",
+        "export",
+    }
 
 
 def test_parser_run_requires_expression():
@@ -247,3 +259,92 @@ def test_verify_outcome_flags_drift_when_sharpe_diverges():
     )
     assert out.ok is False
     assert out.code_changed
+
+
+# ---------- M-5: new subcommands (parser wiring + pure helpers) ----------
+
+
+def test_parser_compare_requires_at_least_one_expression():
+    p = build_parser()
+    # argparse nargs="+" requires at least one — zero raises SystemExit
+    with pytest.raises(SystemExit):
+        p.parse_args(["compare"])
+    # One expression parses fine syntactically (the handler rejects <2 with
+    # its own message + exit code 2, that's exercised in an integration test)
+    args = p.parse_args(["compare", "rank(close)"])
+    assert args.expressions == ["rank(close)"]
+
+
+def test_parser_compare_accepts_many():
+    p = build_parser()
+    # Three exprs; no leading-dash since argparse parses those as flags by
+    # default.  Users wanting a leading-minus expression must wrap with `--`:
+    #   alphatest compare -- "rank(close)" "-rank(open)"
+    args = p.parse_args(["compare", "rank(close)", "rank(open)", "rank(volume)"])
+    assert len(args.expressions) == 3
+
+
+def test_parser_stress_takes_expression():
+    p = build_parser()
+    args = p.parse_args(["stress", "rank(close)"])
+    assert args.expression == "rank(close)"
+
+
+def test_parser_optimize_defaults():
+    p = build_parser()
+    args = p.parse_args(["optimize", "rank(delta(close, {3..10:1}))"])
+    assert args.min_sharpe == 1.0
+    assert args.max_combinations == 50
+
+
+def test_parser_export_format_choices():
+    p = build_parser()
+    args = p.parse_args(["export", "42"])
+    assert args.format == "brain"
+    args = p.parse_args(["export", "42", "--format", "json"])
+    assert args.format == "json"
+    with pytest.raises(SystemExit):
+        p.parse_args(["export", "42", "--format", "xml"])  # invalid choice
+
+
+def test_parser_list_new_filters():
+    p = build_parser()
+    args = p.parse_args(["list", "--min-sharpe", "1.0", "--max-dd", "-0.25"])
+    assert args.min_sharpe == 1.0
+    assert args.max_dd == -0.25
+    assert args.has_provenance is False
+    args2 = p.parse_args(["list", "--has-provenance"])
+    assert args2.has_provenance is True
+
+
+# ---------- list filters: SQL behaviour ----------
+
+
+def test_list_query_min_sharpe_filter(tmp_path):
+    db = _make_test_db(tmp_path)
+    # Existing _make_test_db rows have Sharpe 0.3 ("low") and 1.2 ("high")
+    rows = list_alphas._query(db, limit=10, order="recent", min_sharpe=1.0)
+    assert [r["name"] for r in rows] == ["high"]
+
+
+def test_list_query_max_dd_filter(tmp_path):
+    db = _make_test_db(tmp_path)
+    # Drawdowns: low=-0.12, high=-0.08.  Threshold -0.10 keeps only the
+    # "high" alpha (since -0.08 ≥ -0.10 but -0.12 < -0.10).
+    rows = list_alphas._query(db, limit=10, order="recent", max_dd=-0.10)
+    assert [r["name"] for r in rows] == ["high"]
+
+
+def test_list_query_has_provenance_keeps_only_signed_alphas(tmp_path):
+    """Both seeded rows have code+data sigs, so the filter is a no-op
+    against this fixture — exercise the no-op path."""
+    db = _make_test_db(tmp_path)
+    rows = list_alphas._query(db, limit=10, order="recent", has_provenance=True)
+    assert len(rows) == 2  # both seeded rows have sigs in _make_test_db
+
+
+def test_list_query_combined_filters_intersect(tmp_path):
+    db = _make_test_db(tmp_path)
+    # min_sharpe=1.0 keeps "high"; max_dd=-0.20 keeps both → intersection = high
+    rows = list_alphas._query(db, limit=10, order="recent", min_sharpe=1.0, max_dd=-0.20)
+    assert [r["name"] for r in rows] == ["high"]
