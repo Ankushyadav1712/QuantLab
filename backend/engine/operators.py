@@ -749,3 +749,56 @@ def pasteurize(x: pd.DataFrame) -> pd.DataFrame:
     """Replace ±inf and NaN with 0.  Use after divisions that may produce
     inf/NaN you don't want propagating into sizing."""
     return x.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
+# ---------- Aliases matching the WorldQuant Brain spec ----------
+# `neutralize(x, g)` is what Brain calls group-demeaning; we already implement
+# the same semantics under `group_neutralize`.  Aliasing rather than renaming
+# avoids breaking any saved alphas / examples that use the local name.
+neutralize = group_neutralize
+
+
+def correlation(x: pd.DataFrame, y: pd.DataFrame) -> pd.DataFrame:
+    """Cross-sectional Pearson correlation between rows of x and y at each
+    time step.
+
+    Different from ``ts_corr(x, y, d)``, which rolls over time.  Here, for
+    each date t, we compute corr(x.iloc[t, :], y.iloc[t, :]) and broadcast
+    that scalar across the row so the result has the same (dates × tickers)
+    shape every other operator expects.
+
+    Equivalent Brain semantics: per-day cross-sectional correlation between
+    two signal matrices.  Useful for "how aligned is my new alpha with this
+    existing factor today?" diagnostics.
+    """
+    x, y = x.align(y, join="inner")
+    # rowwise corr ignoring NaN; pandas' .corrwith(axis=1) computes column-
+    # wise pairs, which is the wrong axis — we want each *row* (each date)
+    # treated as a vector.  Do it explicitly so the NaN handling is obvious.
+    scalar_per_day = x.apply(
+        lambda row: row.corr(y.loc[row.name]),
+        axis=1,
+    )
+    # Broadcast the per-day scalar across every column so the result composes
+    # cleanly with other cross-sectional operators.
+    return pd.DataFrame(
+        np.tile(scalar_per_day.values.reshape(-1, 1), (1, x.shape[1])),
+        index=x.index,
+        columns=x.columns,
+    )
+
+
+def cap_weight(x: pd.DataFrame, market_cap: pd.DataFrame) -> pd.DataFrame:
+    """Market-cap-weighted variant of a cross-sectional signal.
+
+    Multiplies the input signal by market_cap, then re-ranks cross-sectionally
+    so the result stays bounded in [0, 1] per day (matching what `rank()`
+    returns).  Stocks with NaN market_cap on a given day get NaN weight.
+
+    The evaluator injects ``market_cap`` automatically when it sees the
+    function call ``cap_weight(x)``; researchers don't pass it explicitly.
+    """
+    x, mc = x.align(market_cap, join="inner")
+    weighted = x * mc
+    # Cross-sectional re-rank → keeps the result composable with rank/zscore
+    return rank(weighted)

@@ -64,6 +64,9 @@ CASHFLOW_LABELS: dict[str, tuple[str, ...]] = {
     "operating_cash_flow": ("Operating Cash Flow", "Total Cash From Operating Activities"),
     "capex": ("Capital Expenditure", "Capital Expenditures"),
     "free_cash_flow": ("Free Cash Flow",),  # often computed below if missing
+    # yfinance reports as negative (cash outflow); we take absolute value when
+    # computing dividend_yield so the field reads as a positive yield.
+    "dividends_paid": ("Cash Dividends Paid", "Common Stock Dividends Paid", "Dividends Paid"),
 }
 
 # Names ratios depend on (and the close-price matrix, supplied at compute time).
@@ -78,7 +81,11 @@ RATIO_FIELDS: tuple[str, ...] = (
     "current_ratio",
     "gross_margin",
     "operating_margin",
+    "net_margin",
     "fcf_yield",
+    "earnings_yield",
+    "dividend_yield",
+    "shares_outstanding",
 )
 
 # Combined surface used by parser/editor/FIELDS metadata
@@ -220,6 +227,7 @@ def _compute_ratios(
     fcf = raw.get("free_cash_flow")
     ebitda = raw.get("ebitda")
     cash = raw.get("cash")
+    div_paid = raw.get("dividends_paid")
 
     # Implied shares = net_income / eps (per ticker, per day) — only valid
     # where both are finite and non-zero.
@@ -235,6 +243,8 @@ def _compute_ratios(
         out["roe"] = safe_div(ni, book)
     if ni is not None and assets is not None:
         out["roa"] = safe_div(ni, assets)
+    if ni is not None and rev is not None:
+        out["net_margin"] = safe_div(ni, rev)
     if debt is not None and book is not None:
         out["debt_to_equity"] = safe_div(debt, book)
     if cur_a is not None and cur_l is not None:
@@ -248,18 +258,35 @@ def _compute_ratios(
     if market_cap is not None:
         if ni is not None:
             out["pe_ratio"] = safe_div(market_cap, ni)
+            # earnings_yield is just 1/PE but exposed as its own field because
+            # researchers compose it differently (e.g. add to dividend_yield
+            # for shareholder yield).  Computed from ni/mcap directly so it
+            # NaNs cleanly when ni is missing without needing a divide-by-PE.
+            out["earnings_yield"] = safe_div(ni, market_cap)
         if book is not None:
             out["pb_ratio"] = safe_div(market_cap, book)
         if rev is not None:
             out["ps_ratio"] = safe_div(market_cap, rev)
         if fcf is not None:
             out["fcf_yield"] = safe_div(fcf, market_cap)
+        if div_paid is not None:
+            # yfinance reports dividends_paid as a cash *outflow* (negative).
+            # The intuitive direction for "yield" is positive, so abs() it
+            # before dividing.  Stocks that don't pay dividends have div_paid
+            # = NaN → dividend_yield = NaN, which is the right semantics.
+            out["dividend_yield"] = safe_div(div_paid.abs(), market_cap)
         # Enterprise value / EBITDA — EV ≈ market_cap + total_debt - cash
         if ebitda is not None and debt is not None:
             ev = market_cap + debt
             if cash is not None:
                 ev = ev - cash
             out["ev_ebitda"] = safe_div(ev, ebitda)
+
+    # shares_outstanding is computed above as a side-effect of the market_cap
+    # derivation; expose it so expressions like `rank(close * shares_outstanding)`
+    # can reference it directly instead of having to re-derive it.
+    if shares is not None:
+        out["shares_outstanding"] = shares
 
     return out
 
