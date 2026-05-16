@@ -278,6 +278,30 @@ class PerformanceAnalytics:
         dd_durations = _drawdown_durations(equity)
         fitness_wq = _fitness_wq(sharpe, annual_return, avg_turnover_frac)
 
+        # ---- Long/Short exposure (PDF Section 5.1: "Long/Short Exposure") ---
+        # Reported as a fraction of booksize so the numbers are scale-free and
+        # comparable across saved alphas with different booksize settings.
+        # All four values default to None (instead of 0) so an old saved
+        # result with no positions matrix renders the row as "—" rather than
+        # a misleading "0.00% exposure".
+        #
+        # Use ``positions`` (dollar-denominated holdings) — not ``weights``
+        # (normalized signal in [-1, +1]) — to keep numerator and denominator
+        # in the same units as ``book_proxy``.  Mixing the two yields 1e-8
+        # ratios; ask me how I learned.
+        long_exposure: float | None = None
+        short_exposure: float | None = None
+        gross_exposure: float | None = None
+        net_exposure: float | None = None
+        if positions is not None and not positions.empty and book_proxy > 0:
+            longs_per_day = positions.where(positions > 0, 0.0).sum(axis=1)
+            shorts_per_day = positions.where(positions < 0, 0.0).sum(axis=1)  # signed (neg)
+            long_exposure = longs_per_day.mean() / book_proxy
+            short_exposure = shorts_per_day.mean() / book_proxy
+            # Gross = |L| + |S| (always ≥ 0); net = L + S (≈ 0 for dollar-neutral)
+            gross_exposure = (longs_per_day - shorts_per_day).mean() / book_proxy
+            net_exposure = (longs_per_day + shorts_per_day).mean() / book_proxy
+
         # ---- Tier 2: sector + size exposure, regime stress test ----------
         sector_exposure: dict[str, Any] | None = None
         size_exposure: dict[str, Any] | None = None
@@ -357,6 +381,12 @@ class PerformanceAnalytics:
             # Tier 4 — daily IC series for time-series chart, quintile bars
             "ic_series": ic_series_payload,
             "quintile_returns": quintile_returns,
+            # Long/Short dollar exposure as fractions of booksize.  For a true
+            # dollar-neutral L/S strategy: net ≈ 0, gross ≈ 2·long, short < 0.
+            "long_exposure": _safe_float(long_exposure),
+            "short_exposure": _safe_float(short_exposure),
+            "gross_exposure": _safe_float(gross_exposure),
+            "net_exposure": _safe_float(net_exposure),
             # Tier 2 — exposure + stress test
             "sector_exposure": sector_exposure,
             "size_exposure": size_exposure,
