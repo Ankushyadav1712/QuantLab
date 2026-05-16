@@ -1378,6 +1378,11 @@ def _make_config(settings: dict | None, *, run_oos: bool = True) -> SimulationCo
         # PDF Section 9.2 — ADV liquidity filter.  Default 0 (off) so saved
         # alphas keep headline numbers stable; opt in via the settings panel.
         min_adv_dollars=float(s.get("min_adv_dollars", 0.0)),
+        # Cost realism — all default off so existing saved alphas keep the
+        # same numbers; the settings panel exposes per-knob opt-in.
+        spread_model=s.get("spread_model", "none"),
+        half_spread_bps=float(s.get("half_spread_bps", 2.5)),
+        borrow_cost_bps_annual=float(s.get("borrow_cost_bps_annual", 0.0)),
     )
 
 
@@ -1402,6 +1407,9 @@ def _config_to_dict(cfg: SimulationConfig) -> dict[str, Any]:
         "execution_lag_days": cfg.execution_lag_days,
         "point_in_time_universe": cfg.point_in_time_universe,
         "min_adv_dollars": cfg.min_adv_dollars,
+        "spread_model": cfg.spread_model,
+        "half_spread_bps": cfg.half_spread_bps,
+        "borrow_cost_bps_annual": cfg.borrow_cost_bps_annual,
     }
 
 

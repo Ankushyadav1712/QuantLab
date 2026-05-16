@@ -9,6 +9,11 @@ from data.sp100_history import build_membership_mask
 
 from engine import operators as ops
 
+# Used to convert annualised borrow rates → daily.  Kept local rather than
+# imported from analytics.performance to avoid a backwards dep (engine
+# shouldn't import from analytics).
+TRADING_DAYS_PER_YEAR = 252
+
 
 def _quick_sharpe(daily_returns: list[float]) -> float:
     """Annualized Sharpe from a list of daily fractional returns.
@@ -48,12 +53,37 @@ class SimulationConfig:
 
     # Cost model.  `flat` keeps the original `bps × turnover` formula.
     # `sqrt_impact` adds an Almgren-Chriss-style permanent-impact term:
-    #     impact_$_i = impact_coefficient · σ_i · |trade_$_i| · √(participation_i)
-    # where `participation_i = |trade_$_i| / dollar_volume_i` and σ_i is each
-    # stock's realized volatility.  This is the realistic upgrade — flat-bps
-    # under-charges high-turnover, large-trade-relative-to-ADV strategies.
+    #     impact_$_i = impact_coefficient · σ_daily_i · |trade_$_i| · √(participation_i)
+    # where `participation_i = |trade_$_i| / dollar_volume_i` and σ_daily_i is
+    # each stock's daily realized volatility (20-day rolling std of daily
+    # returns — NOT annualised; the impact formula expects daily σ).
+    # This is the realistic upgrade — flat-bps under-charges high-turnover,
+    # large-trade-relative-to-ADV strategies.
     cost_model: Literal["flat", "sqrt_impact"] = "flat"
     impact_coefficient: float = 0.1
+
+    # ----------------------------------------------------------------------
+    # Realistic-cost extensions (PDF Section 9.2 audit, "cost realism" gap)
+    # ----------------------------------------------------------------------
+    # Bid/ask spread cost.  Added on top of `transaction_cost_bps`, so the
+    # latter should be set to 0 if you want spread cost in isolation.
+    #   * "none"            — backwards-compat, no spread charge
+    #   * "flat"            — charge `half_spread_bps` on every trade
+    #   * "corwin_schultz"  — per-day per-ticker spread from the
+    #                          ``corwin_schultz`` derived field (high/low
+    #                          based estimator; varies day-to-day with vol)
+    spread_model: Literal["none", "flat", "corwin_schultz"] = "none"
+    half_spread_bps: float = 2.5  # used only when spread_model="flat"
+
+    # Borrow cost charged daily on the *absolute* value of short positions.
+    # Industry baseline: easy-to-borrow large caps = 25–50 bps/yr, hard-to-
+    # borrow small caps = 200–1000+ bps/yr.  Default 0 = no borrow cost
+    # (backwards compat); pass 50 for the IB-style large-cap baseline.
+    #
+    # Daily charge = |short_$| × borrow_bps_annual / (10_000 × 252).  Persistently
+    # short books bleed Sharpe in proportion to gross short exposure × time —
+    # critical for L/S strategies where shorting was previously free.
+    borrow_cost_bps_annual: float = 0.0
 
     # Walk-forward analysis (rolling train→test windows over the full window).
     # Off by default since it costs ~20× the compute of a single backtest.
@@ -107,6 +137,14 @@ class BacktestResult:
     # by IC computation; stored here to avoid leaking the global data dict
     # into analytics modules.
     forward_returns: pd.DataFrame | None = None
+    # Per-component daily cost streams in dollars, summed across stocks.
+    # Lets ``performance.compute()`` build a cost_breakdown showing the
+    # researcher which cost source is biting (flat / spread / impact /
+    # borrow).  Optional: tests + older saved results may not populate it.
+    #
+    # Schema (every value is a per-day list aligned to ``dates``):
+    #   {"flat": [...], "spread": [...], "impact": [...], "borrow": [...]}
+    cost_components: dict[str, list[float]] | None = None
 
 
 class Backtester:
@@ -243,11 +281,34 @@ class Backtester:
         stock_pnl = positions.shift(exec_lag) * returns
         gross_pnl = stock_pnl.sum(axis=1, skipna=True)
 
-        # Transaction costs.  Per-stock |Δ$| matrix → flat spread/commission
-        # always, optional Almgren-Chriss square-root impact on top.
+        # ---- Transaction costs, decomposed into 4 sources ---------------
+        # Per-stock |Δ$| trade matrix is the basis for every per-trade cost.
         delta_pos = (positions - positions.shift(1)).abs()
+
+        # (1) Flat bps — commission-style, applied to every trade dollar
         flat_cost_per_stock = delta_pos * config.transaction_cost_bps / 10_000.0
 
+        # (2) Bid/ask spread — disabled by default to preserve existing
+        # backtest numbers; opt in via spread_model.
+        spread_cost_per_stock = pd.DataFrame(0.0, index=positions.index, columns=positions.columns)
+        if config.spread_model == "flat":
+            spread_cost_per_stock = delta_pos * config.half_spread_bps / 10_000.0
+        elif config.spread_model == "corwin_schultz":
+            cs = self.data.get("corwin_schultz")
+            if cs is not None and not cs.empty:
+                cs_aligned = (
+                    cs.reindex(index=positions.index, columns=positions.columns)
+                    .fillna(0.0)
+                    .clip(lower=0.0)
+                )
+                # CS estimator returns a *fractional* spread (e.g. 0.001 = 10 bps).
+                # Half-spread on a round-trip → trade pays half the quoted spread.
+                spread_cost_per_stock = delta_pos * cs_aligned * 0.5
+            # If the CS field isn't loaded, silently zero — same graceful
+            # degradation we use for sqrt_impact missing fields.
+
+        # (3) Almgren-Chriss permanent-impact term
+        impact_cost_per_stock = pd.DataFrame(0.0, index=positions.index, columns=positions.columns)
         if config.cost_model == "sqrt_impact":
             dv = self.data.get("dollar_volume")
             rv = self.data.get("realized_vol")
@@ -259,20 +320,30 @@ class Backtester:
                     0.0
                 )
                 participation = (delta_pos / dv_aligned).fillna(0.0).clip(lower=0.0)
-                # impact_$ = c · σ · |trade$| · √(participation)
-                impact_per_stock = (
+                # impact_$ = c · σ_daily · |trade$| · √(participation)
+                impact_cost_per_stock = (
                     config.impact_coefficient * rv_aligned * delta_pos * participation.pow(0.5)
                 )
-                cost_per_stock = flat_cost_per_stock + impact_per_stock
-            else:
-                # Required fields missing — fall back silently to flat-bps
-                cost_per_stock = flat_cost_per_stock
-        else:
-            cost_per_stock = flat_cost_per_stock
+
+        # (4) Borrow cost — daily charge on absolute short notional.
+        # Held positions, not trades — uses shifted positions so the holder
+        # of the short at start-of-day t pays for the t→t+1 carry.
+        borrow_cost_per_day = pd.Series(0.0, index=positions.index)
+        if config.borrow_cost_bps_annual > 0:
+            shorts = (-positions.shift(1)).clip(lower=0.0)
+            short_notional = shorts.sum(axis=1, skipna=True)
+            daily_rate = config.borrow_cost_bps_annual / (10_000.0 * TRADING_DAYS_PER_YEAR)
+            borrow_cost_per_day = short_notional * daily_rate
+
+        # Aggregate per-day cost streams (sum across stocks for per-trade
+        # components; borrow is already per-day)
+        flat_per_day = flat_cost_per_stock.sum(axis=1, skipna=True)
+        spread_per_day = spread_cost_per_stock.sum(axis=1, skipna=True)
+        impact_per_day = impact_cost_per_stock.sum(axis=1, skipna=True)
+        total_cost_per_day = flat_per_day + spread_per_day + impact_per_day + borrow_cost_per_day
 
         turnover = delta_pos.sum(axis=1, skipna=True)
-        cost = cost_per_stock.sum(axis=1, skipna=True)
-        net_pnl = gross_pnl - cost
+        net_pnl = gross_pnl - total_cost_per_day
 
         cumulative = net_pnl.cumsum()
         daily_returns = net_pnl / config.booksize
@@ -289,6 +360,15 @@ class Backtester:
             positions=positions,
             signal_matrix=signal_snapshot,
             forward_returns=returns,
+            cost_components={
+                # Explicit float() coercion — pandas' .tolist() is typed
+                # loosely (list[Any]), and BacktestResult.cost_components
+                # is list[float] | None.
+                "flat": [float(v) for v in flat_per_day.tolist()],
+                "spread": [float(v) for v in spread_per_day.tolist()],
+                "impact": [float(v) for v in impact_per_day.tolist()],
+                "borrow": [float(v) for v in borrow_cost_per_day.tolist()],
+            },
         )
 
     # ------------------------------------------------------------------
