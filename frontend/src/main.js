@@ -506,19 +506,18 @@ function openWelcomeModal({ force }) {
 // ---------- CLI guide modal ----------
 //
 // A walkthrough for the `alphatest` CLI — what to type, what to expect, in
-// what order.  Dev-only: the CLI requires the cloned repo + a Python venv,
-// neither of which a Vercel visitor has, so advertising it on the public
-// build would be misleading.  Vite injects `import.meta.env.DEV` as `true`
-// under `npm run dev` and `false` after `npm run build`, so this block is
-// dead-code-eliminated from the production bundle.
-if (import.meta.env.DEV) {
+// what order.  Visible in every build (dev + production) now that the repo
+// is public; visitors can clone + install per Step 0 in the modal and then
+// follow the rest of the steps.  Previously dev-only because the repo was
+// private and a Vercel visitor would have hit a 404 on `git clone`.
+{
   const headerActions = document.querySelector('.header-actions');
   const exportBtn = document.getElementById('export-tearsheet-btn');
   if (headerActions && exportBtn) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.id = 'cli-guide-btn';
-    btn.title = 'alphatest CLI usage + smoke-test guide (dev builds only)';
+    btn.title = 'alphatest CLI — clone the repo and run backtests from a terminal';
     btn.textContent = 'CLI Guide';
     btn.addEventListener('click', openCliGuide);
     headerActions.insertBefore(btn, exportBtn);
@@ -533,17 +532,34 @@ function openCliGuide() {
     `
       <div class="cli-guide">
         <p class="cli-guide-lead">
-          The same engine the web app uses, exposed as a four-subcommand CLI
+          The same engine this web app uses, exposed as a four-subcommand CLI
           (<code>run</code>, <code>shuffle</code>, <code>list</code>,
           <code>verify</code>). Useful for CI checks, cron jobs, and quick
           one-off backtests without a running server.
         </p>
 
         <div class="cli-guide-step">
+          <span class="cli-guide-num">0</span>
+          <div>
+            <strong>Clone the repo + install Python deps</strong> — one-time
+            setup. The CLI runs locally against the same yfinance cache the
+            web app uses; the first <code>./alphatest run</code> takes ~30 s
+            to populate the parquet cache, then ~1–2 s thereafter.
+            <pre class="cli-guide-cmd">git clone https://github.com/Ankushyadav1712/QuantLab.git
+cd QuantLab
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements.txt</pre>
+            <span class="cli-guide-hint">Requires Python 3.11+ and git. The
+              <code>./alphatest</code> wrapper auto-finds the venv —
+              no need to activate it manually.</span>
+          </div>
+        </div>
+
+        <div class="cli-guide-step">
           <span class="cli-guide-num">1</span>
           <div>
             <strong>Open a terminal at the repo root.</strong>
-            <pre class="cli-guide-cmd">cd /path/to/QuantLab</pre>
+            <pre class="cli-guide-cmd">cd QuantLab</pre>
           </div>
         </div>
 
