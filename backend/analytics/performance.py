@@ -182,6 +182,37 @@ class PerformanceAnalytics:
         avg_turnover_frac = avg_turnover_dollars / book_proxy if book_proxy > 0 else 0.0
         fitness = sharpe * math.sqrt(abs(annual_return)) * max(0.0, 1.0 - avg_turnover_frac)
 
+        # ---- Cost breakdown (PDF "cost realism" gap) ---------------------
+        # Sum each cost component over the backtest window so the researcher
+        # can see which source ate into PnL.  Reported in dollars + as a %
+        # of gross PnL.  All four are None when the backtester didn't emit
+        # cost_components (older saved results / tests that hand-build a
+        # BacktestResult by hand).
+        cost_breakdown: dict[str, Any] | None = None
+        if result.cost_components is not None:
+            comps = result.cost_components
+            flat_tot = float(sum(comps.get("flat", [])))
+            spread_tot = float(sum(comps.get("spread", [])))
+            impact_tot = float(sum(comps.get("impact", [])))
+            borrow_tot = float(sum(comps.get("borrow", [])))
+            total_cost = flat_tot + spread_tot + impact_tot + borrow_tot
+            # Gross = net_pnl + total_cost (since net_pnl was already cost-deducted)
+            gross_pnl = float(daily_pnl.sum()) + total_cost
+            # Percentage of gross eaten by costs — bounded [0, 100] for the
+            # common case but can exceed 100% if costs > gross (an alpha
+            # whose gross PnL was wiped out by friction).
+            cost_pct = (100.0 * total_cost / abs(gross_pnl)) if abs(gross_pnl) > 0 else 0.0
+            cost_breakdown = {
+                "gross_pnl": gross_pnl,
+                "flat_bps_cost": flat_tot,
+                "spread_cost": spread_tot,
+                "impact_cost": impact_tot,
+                "borrow_cost": borrow_tot,
+                "total_cost": total_cost,
+                "net_pnl": float(daily_pnl.sum()),
+                "cost_pct_of_gross": cost_pct,
+            }
+
         win_rate = float((daily_pnl > 0).mean()) if n else 0.0
 
         pos_sum = float(daily_pnl[daily_pnl > 0].sum())
@@ -428,6 +459,9 @@ class PerformanceAnalytics:
             # PDF Section 5.2 — Brinson allocation vs selection split.
             # None when forward_returns is unavailable (old saved results).
             "pnl_attribution": pnl_attribution,
+            # Cost realism (flat / spread / impact / borrow split).  None if
+            # the backtester didn't populate result.cost_components.
+            "cost_breakdown": cost_breakdown,
             "stress_test": stress_test,
             # Date range carried forward so compare_is_oos can build period
             # labels without needing the original BacktestResult.
