@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# QuantLab CLI shim — `./alphatest run "rank(close)"` from the repo root.
+# Forwards into backend/scripts/alphatest.py using whichever python is on PATH
+# (typically the project venv when activated).
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+# Resolution order:
+#   1. $QUANTLAB_PYTHON env override (CI, custom interpreters)
+#   2. The project venv at backend/.venv if present
+#   3. `python` on PATH (typically an activated venv)
+#   4. `python3` (macOS / Homebrew default)
+PY="${QUANTLAB_PYTHON:-}"
+if [[ -z "${PY}" ]]; then
+    if [[ -x "${here}/backend/.venv/bin/python" ]]; then PY="${here}/backend/.venv/bin/python"
+    elif command -v python >/dev/null 2>&1; then PY=python
+    elif command -v python3 >/dev/null 2>&1; then PY=python3
+    else echo "alphatest: no python interpreter on PATH" >&2; exit 127
+    fi
+fi
+exec "${PY}" "${here}/backend/scripts/alphatest.py" "$@"

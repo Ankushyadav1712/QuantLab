@@ -248,6 +248,102 @@ def compute_alpha_decay(
     }
 
 
+def compute_quintile_returns(
+    signal: pd.DataFrame,
+    forward_returns: pd.DataFrame,
+    *,
+    n_quantiles: int = 5,
+    horizon: int = 1,
+) -> list[dict[str, float | int | None]]:
+    """Group stocks into ``n_quantiles`` (default 5) by daily signal value,
+    then report the mean forward-return per quantile averaged over time.
+
+    The classic factor-research chart: a monotonic increase from Q1 → Q5
+    means the signal predicts returns across its full distribution.  A
+    pattern like Q1 high / Q5 high / Q3 flat means the signal only
+    captures *extremes* — usually a sign of overfitting to a few outliers.
+
+    Parameters
+    ----------
+    signal : (date × ticker) DataFrame
+        Post-neutralization alpha values.
+    forward_returns : (date × ticker) DataFrame
+        Per-stock realized returns; shifted internally by ``horizon``.
+    n_quantiles : int, default 5
+        Number of buckets.  5 (quintiles) is the standard quant convention.
+    horizon : int, default 1
+        Forward-return horizon in trading days.
+
+    Returns
+    -------
+    list of length ``n_quantiles`` (or empty if inputs are degenerate)::
+
+        [{"quantile": 1, "mean_return": -0.0012, "n_days": 1041},
+         {"quantile": 2, "mean_return": -0.0004, "n_days": 1041},
+         ...
+         {"quantile": 5, "mean_return":  0.0018, "n_days": 1041}]
+
+    A "monotonic alpha" should show ``mean_return`` increasing from
+    quantile 1 to quantile ``n_quantiles``.
+    """
+    if signal is None or signal.empty or forward_returns is None or forward_returns.empty:
+        return []
+    if n_quantiles < 2:
+        return []
+
+    cols = signal.columns.intersection(forward_returns.columns)
+    if len(cols) < n_quantiles:
+        # Need at least one ticker per quantile to compute means.
+        return []
+
+    fwd_shifted = forward_returns[cols].shift(-max(1, int(horizon)))
+    sig = signal[cols].reindex(fwd_shifted.index)
+
+    sig_arr = sig.to_numpy(dtype=float)
+    fwd_arr = fwd_shifted.to_numpy(dtype=float)
+    n_rows = sig_arr.shape[0]
+
+    # Per-day per-quantile sums + counts so we can take the time-average
+    # of *per-day means* (preserves per-day equal-weighting; not biased by
+    # days with more valid stocks).
+    quantile_sums = np.zeros(n_quantiles, dtype=float)
+    quantile_counts = np.zeros(n_quantiles, dtype=int)
+
+    for t in range(n_rows):
+        s_row = sig_arr[t]
+        r_row = fwd_arr[t]
+        mask = ~np.isnan(s_row) & ~np.isnan(r_row)
+        if mask.sum() < n_quantiles:
+            continue
+        s_valid = s_row[mask]
+        r_valid = r_row[mask]
+        # Quantile boundaries from the day's signal cross-section
+        edges = np.quantile(s_valid, np.linspace(0, 1, n_quantiles + 1))
+        # np.digitize returns 1..n_quantiles+1; clip to [1..n_quantiles]
+        buckets = np.clip(np.digitize(s_valid, edges[1:-1]) + 1, 1, n_quantiles)
+        for q in range(1, n_quantiles + 1):
+            members = buckets == q
+            n_mem = int(members.sum())
+            if n_mem > 0:
+                quantile_sums[q - 1] += float(r_valid[members].mean())
+                quantile_counts[q - 1] += 1
+
+    results: list[dict[str, float | int | None]] = []
+    for q in range(1, n_quantiles + 1):
+        n_days = int(quantile_counts[q - 1])
+        mean_ret = float(quantile_sums[q - 1] / n_days) if n_days > 0 else float("nan")
+        results.append(
+            {
+                "quantile": int(q),
+                "mean_return": mean_ret
+                if not (math.isnan(mean_ret) or math.isinf(mean_ret))
+                else None,
+                "n_days": n_days,
+            }
+        )
+    return results
+
+
 def compute_rank_stability(signal: pd.DataFrame) -> float | None:
     """Average day-over-day Spearman correlation of the signal's ranks.
 
