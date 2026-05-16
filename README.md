@@ -95,6 +95,23 @@ npm install
 npm run dev                                # http://localhost:5173
 ```
 
+## CLI (`alphatest`)
+
+A thin command-line wrapper around the engine — same data cache, same universe, same numbers as the web UI. Useful for CI checks, cron-driven verification, and quick one-off backtests without a running server.
+
+```bash
+./alphatest run "rank(close) - rank(open)"           # backtest one expression
+./alphatest run "rank(close)" --neutralization sector --oos
+./alphatest shuffle "rank(volume) * rank(returns)" --iters 50   # leakage test
+./alphatest list                                     # saved alphas as a table
+./alphatest list --order sharpe --limit 10
+./alphatest verify 42                                # re-run alpha #42, diff signatures
+```
+
+`verify` exits 0 only when the headline Sharpe matches the saved value within tolerance (default `1e-3`). Signature mismatches surface as warnings — they distinguish *"my code changed"* from *"the data refreshed"* from *"engine non-determinism"*.
+
+The wrapper auto-finds `backend/.venv/bin/python` if present; override with `QUANTLAB_PYTHON=/path/to/python ./alphatest …`.
+
 ## API endpoints
 
 17 endpoints. Browse the auto-generated Swagger UI at `/docs` for full schemas and a "Try it out" button.
@@ -210,8 +227,11 @@ QuantLab/
 │   ├── db/
 │   │   ├── database.py              aiosqlite connection wrapper
 │   │   └── migrations.py            schema init
+│   ├── cli/                         `alphatest` subcommands (run, shuffle, list, verify)
 │   ├── scripts/
 │   │   ├── download_data.py         pre-populate parquet cache
+│   │   ├── alphatest.py             entry point for the `alphatest` CLI
+│   │   ├── shuffle_test.py          legacy — superseded by `alphatest shuffle`
 │   │   └── verify_alphas.py         CLI run of canonical expressions
 │   ├── tests/                       15 files, 222 test funcs / 318 test runs
 │   ├── Dockerfile + .dockerignore

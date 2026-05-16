@@ -12,7 +12,9 @@ from analytics.exposure import compute_sector_exposure, compute_size_exposure
 from analytics.ic_metrics import (
     DEFAULT_DECAY_HORIZONS,
     compute_alpha_decay,
+    compute_ic_series,
     compute_ic_summary,
+    compute_quintile_returns,
     compute_rank_stability,
 )
 from analytics.stress_test import compute_stress_metrics
@@ -246,12 +248,29 @@ class PerformanceAnalytics:
             "r_squared": None,
         }
         rank_stability: float | None = None
+        ic_series_payload: dict[str, Any] | None = None
+        quintile_returns: list[dict[str, Any]] = []
         if result.signal_matrix is not None and result.forward_returns is not None:
             ic_summary = compute_ic_summary(result.signal_matrix, result.forward_returns, horizon=1)
             alpha_decay = compute_alpha_decay(
                 result.signal_matrix, result.forward_returns, horizons=DEFAULT_DECAY_HORIZONS
             )
             rank_stability = compute_rank_stability(result.signal_matrix)
+            # Tier 4: raw daily IC series for the rolling-MA + z-score chart.
+            # NaN-only / empty series collapse to None so the frontend hides
+            # the panel cleanly.
+            ic_raw = compute_ic_series(result.signal_matrix, result.forward_returns, horizon=1)
+            ic_clean = ic_raw.dropna() if ic_raw is not None else None
+            if ic_clean is not None and len(ic_clean) >= 2:
+                ic_series_payload = {
+                    "dates": [d.strftime("%Y-%m-%d") for d in ic_clean.index],
+                    "ic": [_safe_float(v) for v in ic_clean.values],
+                }
+            # Tier 4: factor quintile returns — bucket each day's stocks by
+            # signal value, time-average per-bucket forward returns.
+            quintile_returns = compute_quintile_returns(
+                result.signal_matrix, result.forward_returns, n_quantiles=5
+            )
 
         # Tail ratio, positive-months %, DD durations
         tail_ratio = _tail_ratio(daily_returns)
@@ -335,6 +354,9 @@ class PerformanceAnalytics:
             "positive_months_pct": _safe_float(positive_months_pct),
             "drawdown_durations": dd_durations,
             "fitness_wq": _safe_float(fitness_wq),
+            # Tier 4 — daily IC series for time-series chart, quintile bars
+            "ic_series": ic_series_payload,
+            "quintile_returns": quintile_returns,
             # Tier 2 — exposure + stress test
             "sector_exposure": sector_exposure,
             "size_exposure": size_exposure,

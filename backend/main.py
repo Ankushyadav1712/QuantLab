@@ -22,6 +22,7 @@ from analytics.diversification import (
 from analytics.factor_decomp import FactorDecomposition
 from analytics.pareto import compute_pareto
 from analytics.performance import PerformanceAnalytics, _safe_float, _safe_list
+from analytics.provenance import build_provenance, compute_code_signature, compute_git_hash
 from config import (
     ALLOWED_ORIGINS,
     DATA_END,
@@ -1077,6 +1078,13 @@ async def lifespan(_app: FastAPI):
         fundamentals_available = fundamentals_coverage_pct >= _FUNDAMENTALS_MIN_COVERAGE
     _state["fundamentals_available"] = fundamentals_available
     _state["fundamentals_coverage_pct"] = fundamentals_coverage_pct
+
+    # Reproducibility provenance: hash the source files + git HEAD once at
+    # boot.  Reused by every alpha save so we don't re-hash 15 files per
+    # request.  Data signature is *not* cached — it depends on close-matrix
+    # contents which change after a cache refresh.
+    _state["code_signature"] = compute_code_signature()
+    _state["git_hash"] = compute_git_hash()
     log.info(
         "lifespan: ready",
         extra={
@@ -1427,6 +1435,9 @@ def _compute_perf_pack(
     metrics["sector_exposure"] = full.get("sector_exposure")
     metrics["size_exposure"] = full.get("size_exposure")
     metrics["stress_test"] = full.get("stress_test", [])
+    # Tier 4 — IC time series + factor quintile bars (frontend charts)
+    metrics["ic_series"] = full.get("ic_series")
+    metrics["quintile_returns"] = full.get("quintile_returns", [])
 
     timeseries = {
         "dates": list(result.dates),
@@ -2127,6 +2138,19 @@ async def save_alpha(req: AlphaSaveRequest):
     metrics = response["is_metrics"]
     created_at = datetime.now(timezone.utc).isoformat()
 
+    # Provenance: bind the saved alpha to the exact code + data state that
+    # produced these numbers.  If the user re-runs this alpha six months
+    # from now and gets different numbers, the signature diff tells them
+    # whether the cause was a code edit, a data refresh, or something else.
+    provenance = build_provenance(
+        close_matrix=_state["data"].get("close"),
+        cached_code_sig=_state.get("code_signature"),
+        cached_git_hash=_state.get("git_hash"),
+    )
+    # Stash provenance inside the result_json blob too so older clients
+    # that only read the blob (not the dedicated columns) still see it.
+    response["provenance"] = provenance
+
     payload = json.dumps(response, default=str)
 
     async with connect() as db:
@@ -2134,8 +2158,9 @@ async def save_alpha(req: AlphaSaveRequest):
             """
             INSERT INTO alphas
                 (name, expression, notes, sharpe, annual_return, max_drawdown,
-                 turnover, fitness, created_at, result_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 turnover, fitness, created_at, result_json,
+                 code_signature, data_signature, git_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 req.name,
@@ -2148,6 +2173,9 @@ async def save_alpha(req: AlphaSaveRequest):
                 metrics.get("fitness"),
                 created_at,
                 payload,
+                provenance.get("code_signature"),
+                provenance.get("data_signature"),
+                provenance.get("git_hash"),
             ),
         )
         await db.commit()
@@ -2181,7 +2209,8 @@ async def list_alphas():
         cursor = await db.execute(
             """
             SELECT id, name, expression, notes, sharpe, annual_return,
-                   max_drawdown, turnover, fitness, created_at
+                   max_drawdown, turnover, fitness, created_at,
+                   code_signature, data_signature, git_hash
             FROM alphas
             ORDER BY id DESC
             """
