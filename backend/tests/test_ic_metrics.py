@@ -13,6 +13,7 @@ from analytics.ic_metrics import (
     compute_alpha_decay,
     compute_ic_series,
     compute_ic_summary,
+    compute_quintile_returns,
     compute_rank_stability,
 )
 
@@ -195,3 +196,88 @@ def test_rank_stability_handles_empty_or_single_row():
         )
         is None
     )
+
+
+# ---------- Quintile returns ----------
+
+
+def test_quintile_returns_monotonic_for_perfect_signal():
+    """signal[t] = next-day return → Q1 should be the worst, Q5 the best,
+    and the curve should be perfectly monotonic in between."""
+    rets, _ = _frames(T=500, N=100, seed=0)
+    signal = rets.shift(-1)
+    out = compute_quintile_returns(signal, rets, n_quantiles=5)
+    assert len(out) == 5
+    assert [q["quantile"] for q in out] == [1, 2, 3, 4, 5]
+    means = [q["mean_return"] for q in out]
+    # Strictly monotonic
+    for prev, curr in zip(means, means[1:]):
+        assert curr > prev
+    # Symmetric around zero (mean of all returns is ~0)
+    assert abs(means[0] + means[4]) < 1e-3
+
+
+def test_quintile_returns_flat_for_noise_signal():
+    """Independent random signal → quintile means should hover near zero
+    with no monotonic ordering."""
+    rng = np.random.default_rng(42)
+    T, N = 400, 50
+    dates = pd.date_range("2024-01-01", periods=T, freq="B")
+    tickers = [f"T{i}" for i in range(N)]
+    rets = pd.DataFrame(rng.standard_normal((T, N)) * 0.01, index=dates, columns=tickers)
+    sig = pd.DataFrame(rng.standard_normal((T, N)), index=dates, columns=tickers)
+    out = compute_quintile_returns(sig, rets, n_quantiles=5)
+    # All means should be tiny (no edge)
+    means = [q["mean_return"] for q in out]
+    assert all(abs(m) < 5e-4 for m in means), means
+
+
+def test_quintile_returns_inverted_signal_descending():
+    """signal = -next_return → Q1 should be highest, Q5 lowest (reversed)."""
+    rets, _ = _frames(T=300, N=80, seed=1)
+    sig = -rets.shift(-1)
+    out = compute_quintile_returns(sig, rets, n_quantiles=5)
+    means = [q["mean_return"] for q in out]
+    # Strictly DEcreasing
+    for prev, curr in zip(means, means[1:]):
+        assert curr < prev
+
+
+def test_quintile_returns_handles_too_few_tickers():
+    """Need at least n_quantiles tickers — anything fewer returns empty list."""
+    dates = pd.date_range("2024-01-01", periods=10, freq="B")
+    tickers = ["A", "B", "C"]  # only 3 tickers, asking for 5 quintiles
+    sig = pd.DataFrame(np.random.randn(10, 3), index=dates, columns=tickers)
+    rets = pd.DataFrame(np.random.randn(10, 3) * 0.01, index=dates, columns=tickers)
+    out = compute_quintile_returns(sig, rets, n_quantiles=5)
+    assert out == []
+
+
+def test_quintile_returns_empty_inputs():
+    assert compute_quintile_returns(pd.DataFrame(), pd.DataFrame()) == []
+
+
+def test_quintile_returns_custom_n_quantiles():
+    """Tertiles (n=3) and deciles (n=10) should both work."""
+    rets, _ = _frames(T=200, N=50, seed=2)
+    sig = rets.shift(-1)
+    tert = compute_quintile_returns(sig, rets, n_quantiles=3)
+    deci = compute_quintile_returns(sig, rets, n_quantiles=10)
+    assert len(tert) == 3
+    assert len(deci) == 10
+
+
+def test_quintile_returns_skips_too_few_valid_days():
+    """When fewer than n_quantiles stocks have valid signal+return on a day,
+    that day shouldn't contribute (n_days reflects only valid days)."""
+    dates = pd.date_range("2024-01-01", periods=10, freq="B")
+    tickers = [f"T{i}" for i in range(10)]
+    sig = pd.DataFrame(np.full((10, 10), np.nan), index=dates, columns=tickers)
+    # Only row 0 has 5+ valid signal values; rest are all-NaN
+    sig.iloc[0, :8] = np.arange(8, dtype=float)
+    rets = pd.DataFrame(np.random.randn(10, 10) * 0.01, index=dates, columns=tickers)
+    out = compute_quintile_returns(sig, rets, n_quantiles=5)
+    # We expect 5 entries (always) but n_days <= 1 since only 1 valid day
+    if out:
+        for q in out:
+            assert q["n_days"] <= 1
