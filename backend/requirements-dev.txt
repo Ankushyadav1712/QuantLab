@@ -5,6 +5,10 @@ ruff==0.14.4
 pip-audit==2.9.0
 pytest-cov==6.0.0
 mypy==1.13.0
+# Property-based tests on operators — auto-generates inputs (random shapes /
+# NaN rates) and checks invariants (output bounds, NaN preservation, etc.).
+# Catches edge cases the hand-written examples don't.
+hypothesis>=6.100,<7
 # Type stubs for libraries we actually call into. pandas/numpy are intentionally
 # excluded — too noisy on a never-typechecked codebase. Add later if desired.
 types-requests==2.32.0.20241016

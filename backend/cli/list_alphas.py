@@ -23,6 +23,25 @@ def add_subparser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default="recent",
         help="Sort by save-time (default) or by Sharpe descending.",
     )
+    # PDF Section 6.5 — `library --min-sharpe` filter parity.  Implemented as
+    # SQL WHERE clauses so a large library still streams efficiently.
+    p.add_argument(
+        "--min-sharpe",
+        type=float,
+        default=None,
+        help="Only show alphas with Sharpe ≥ N (default: no filter).",
+    )
+    p.add_argument(
+        "--max-dd",
+        type=float,
+        default=None,
+        help="Only show alphas with max drawdown ≥ N (note: drawdowns are negative — pass e.g. -0.25 to exclude > 25%% drawdowns).",
+    )
+    p.add_argument(
+        "--has-provenance",
+        action="store_true",
+        help="Only show alphas with code+data signatures (saved after the provenance feature shipped).",
+    )
     p.add_argument(
         "--db",
         default=None,
@@ -39,19 +58,53 @@ def handle(args: argparse.Namespace) -> int:
         print("Save an alpha through the web UI first, or pass --db <path>.")
         return 1
 
-    rows = _query(db_path, limit=args.limit, order=args.order)
+    rows = _query(
+        db_path,
+        limit=args.limit,
+        order=args.order,
+        min_sharpe=args.min_sharpe,
+        max_dd=args.max_dd,
+        has_provenance=args.has_provenance,
+    )
     if not rows:
-        print("(no alphas saved yet)")
+        # Distinguish "DB is empty" from "filters excluded everything" so the
+        # researcher knows whether to widen the filters or save an alpha first.
+        any_filter = args.min_sharpe is not None or args.max_dd is not None or args.has_provenance
+        if any_filter:
+            print("(no alphas match the given filters — try widening them)")
+        else:
+            print("(no alphas saved yet)")
         return 0
 
     _print_table(rows)
     return 0
 
 
-def _query(db_path: Path, *, limit: int, order: str) -> list[sqlite3.Row]:
-    """Read up to `limit` alpha rows.  `order_by` is fixed-string SQL, never
-    interpolated from user input."""
+def _query(
+    db_path: Path,
+    *,
+    limit: int,
+    order: str,
+    min_sharpe: float | None = None,
+    max_dd: float | None = None,
+    has_provenance: bool = False,
+) -> list[sqlite3.Row]:
+    """Read up to `limit` alpha rows.  Both `order_by` and the WHERE column
+    names are fixed strings (never user-interpolated); the threshold values
+    are passed as bound parameters."""
     order_by = "id DESC" if order == "recent" else "sharpe DESC NULLS LAST"
+    where_clauses: list[str] = []
+    params: list[float | int] = []
+    if min_sharpe is not None:
+        where_clauses.append("sharpe >= ?")
+        params.append(min_sharpe)
+    if max_dd is not None:
+        where_clauses.append("max_drawdown >= ?")
+        params.append(max_dd)
+    if has_provenance:
+        where_clauses.append("code_signature IS NOT NULL AND data_signature IS NOT NULL")
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    params.append(limit)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
@@ -59,10 +112,11 @@ def _query(db_path: Path, *, limit: int, order: str) -> list[sqlite3.Row]:
             SELECT id, name, expression, sharpe, annual_return, max_drawdown,
                    created_at, code_signature, data_signature, git_hash
             FROM alphas
+            {where_sql}
             ORDER BY {order_by}
             LIMIT ?
             """,
-            (limit,),
+            params,
         )
         return list(cur.fetchall())
 

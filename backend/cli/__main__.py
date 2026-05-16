@@ -10,19 +10,27 @@ from __future__ import annotations
 import argparse
 import sys
 
-from cli import list_alphas, run, shuffle, verify
+from cli import compare, export, list_alphas, optimize, run, shuffle, stress, verify
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alphatest",
-        description="QuantLab CLI — backtest, shuffle-test, list, and verify alphas.",
+        description=(
+            "QuantLab CLI — backtest, shuffle-test, list, compare, stress-test, "
+            "optimize, export and verify alphas."
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
     run.add_subparser(sub)
     shuffle.add_subparser(sub)
     list_alphas.add_subparser(sub)
     verify.add_subparser(sub)
+    # PDF Section 6.5 — additional Brain-spec subcommands
+    compare.add_subparser(sub)
+    stress.add_subparser(sub)
+    optimize.add_subparser(sub)
+    export.add_subparser(sub)
     return parser
 
 
