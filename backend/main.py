@@ -284,6 +284,33 @@ OPERATORS = [
         "description": "Cross-sectional OLS residual of x on y",
     },
     {
+        "name": "correlation",
+        "args": "(x, y)",
+        "category": "cross_sectional",
+        "description": (
+            "Per-day cross-sectional Pearson correlation between x and y, "
+            "broadcast across columns (distinct from ts_corr which rolls over time)"
+        ),
+    },
+    {
+        "name": "cap_weight",
+        "args": "(x)",
+        "category": "cross_sectional",
+        "description": (
+            "Market-cap-weighted variant of x; multiplies by market_cap then "
+            "re-ranks cross-sectionally so the result is bounded [0,1] per day"
+        ),
+    },
+    {
+        "name": "adv",
+        "args": "(d)",
+        "category": "cross_sectional",
+        "description": (
+            "Average dollar volume over the trailing d days — equivalent to "
+            "ts_mean(dollar_volume, d); accepts any d, not just 20"
+        ),
+    },
+    {
         "name": "bucket",
         "args": "(x, n=5)",
         "category": "cross_sectional",
@@ -337,6 +364,12 @@ OPERATORS = [
         "args": "(x, group)",
         "category": "group",
         "description": "Subtract the group mean from each member",
+    },
+    {
+        "name": "neutralize",
+        "args": "(x, group)",
+        "category": "group",
+        "description": "Alias for group_neutralize — matches the Brain Fast-Expression spec",
     },
     {
         "name": "group_mean",
@@ -969,9 +1002,29 @@ FIELDS: list[dict[str, str]] = [
         "description": "Operating income / revenue",
     },
     {
+        "name": "net_margin",
+        "category": "fundamentals_ratio",
+        "description": "Net income / revenue",
+    },
+    {
         "name": "fcf_yield",
         "category": "fundamentals_ratio",
         "description": "Free cash flow / market cap",
+    },
+    {
+        "name": "earnings_yield",
+        "category": "fundamentals_ratio",
+        "description": "Net income / market cap (inverse of P/E)",
+    },
+    {
+        "name": "dividend_yield",
+        "category": "fundamentals_ratio",
+        "description": "Trailing dividends paid / market cap",
+    },
+    {
+        "name": "shares_outstanding",
+        "category": "fundamentals_ratio",
+        "description": "Implied shares from net_income / EPS (per-day, forward-filled)",
     },
 ]
 
@@ -1389,6 +1442,11 @@ _METRIC_KEYS = (
     "tail_ratio",
     "positive_months_pct",
     "fitness_wq",
+    # PDF Section 5.1 — Long/Short dollar exposure (fractions of booksize)
+    "long_exposure",
+    "short_exposure",
+    "gross_exposure",
+    "net_exposure",
 )
 
 
