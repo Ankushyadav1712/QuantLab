@@ -100,6 +100,24 @@ export function createSidebar(container) {
     const checked = selected.has(a.id);
     const w = weights[a.id] ?? 1;
 
+    // Provenance badges: short code + data signatures, optional git sha.
+    // Hover for the long story.  None of these are clickable; they're
+    // identity tags so the user can tell whether two saved alphas were
+    // produced under the same code/data state.
+    const provBadges = [];
+    if (a.code_signature) {
+      provBadges.push(`<span class="prov-badge" title="Code signature — hash of backend source files at save time. Different value = backtest logic changed.">c:${escapeHtml(a.code_signature.slice(0, 6))}</span>`);
+    }
+    if (a.data_signature) {
+      provBadges.push(`<span class="prov-badge" title="Data signature — hash of the close-matrix snapshot at save time. Different value = yfinance returned different numbers.">d:${escapeHtml(a.data_signature.slice(0, 6))}</span>`);
+    }
+    if (a.git_hash) {
+      provBadges.push(`<span class="prov-badge" title="Git commit at save time.">g:${escapeHtml(a.git_hash)}</span>`);
+    }
+    const provRow = provBadges.length
+      ? `<div class="alpha-item-prov">${provBadges.join(' ')}</div>`
+      : '';
+
     item.innerHTML = `
       <div class="alpha-item-head">
         <input type="checkbox" data-role="check" ${checked ? 'checked' : ''} />
@@ -107,6 +125,7 @@ export function createSidebar(container) {
         <span class="sharpe-badge ${sharpeCls}">${sharpeStr}</span>
       </div>
       <div class="alpha-item-expr code" title="${escapeHtml(a.expression)}">${escapeHtml(exprText)}</div>
+      ${provRow}
       <div class="alpha-item-row2">
         <label style="font-size:11px; color:var(--text-secondary);">w</label>
         <input type="number" class="alpha-item-weight" step="0.1" value="${w}" data-role="weight" />

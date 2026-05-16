@@ -6,6 +6,7 @@ import { createEditor } from './components/editor.js';
 import { createDashboard } from './components/dashboard.js';
 import { createCharts } from './components/charts.js';
 import { createPortfolioAnalysis } from './components/portfolio_analysis.js';
+import { createResearchCharts } from './components/research_charts.js';
 import { createSidebar } from './components/sidebar.js';
 import { openTearsheet } from './components/tearsheet.js';
 import { createComparison } from './components/comparison.js';
@@ -48,6 +49,7 @@ root.innerHTML = `
       <section id="charts"></section>
       <section id="comparison"></section>
       <section id="correlation"></section>
+      <section id="research-charts"></section>
       <section id="portfolio-analysis"></section>
     </main>
   </div>
@@ -63,6 +65,7 @@ const sweep = createSweepResults(document.getElementById('sweep'));
 const portfolioAnalysis = createPortfolioAnalysis(
   document.getElementById('portfolio-analysis')
 );
+const researchCharts = createResearchCharts(document.getElementById('research-charts'));
 
 // ---------- State ----------
 
@@ -500,6 +503,134 @@ function openWelcomeModal({ force }) {
   );
 }
 
+// ---------- CLI guide modal ----------
+//
+// A walkthrough for the `alphatest` CLI — what to type, what to expect, in
+// what order.  Dev-only: the CLI requires the cloned repo + a Python venv,
+// neither of which a Vercel visitor has, so advertising it on the public
+// build would be misleading.  Vite injects `import.meta.env.DEV` as `true`
+// under `npm run dev` and `false` after `npm run build`, so this block is
+// dead-code-eliminated from the production bundle.
+if (import.meta.env.DEV) {
+  const headerActions = document.querySelector('.header-actions');
+  const exportBtn = document.getElementById('export-tearsheet-btn');
+  if (headerActions && exportBtn) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'cli-guide-btn';
+    btn.title = 'alphatest CLI usage + smoke-test guide (dev builds only)';
+    btn.textContent = 'CLI Guide';
+    btn.addEventListener('click', openCliGuide);
+    headerActions.insertBefore(btn, exportBtn);
+  }
+}
+
+function openCliGuide() {
+  // Code blocks rendered as <pre> so multi-line shell input stays formatted;
+  // ESC and overlay-click close as with every other modal.
+  showModal(
+    'alphatest CLI — smoke-test guide',
+    `
+      <div class="cli-guide">
+        <p class="cli-guide-lead">
+          The same engine the web app uses, exposed as a four-subcommand CLI
+          (<code>run</code>, <code>shuffle</code>, <code>list</code>,
+          <code>verify</code>). Useful for CI checks, cron jobs, and quick
+          one-off backtests without a running server.
+        </p>
+
+        <div class="cli-guide-step">
+          <span class="cli-guide-num">1</span>
+          <div>
+            <strong>Open a terminal at the repo root.</strong>
+            <pre class="cli-guide-cmd">cd /path/to/QuantLab</pre>
+          </div>
+        </div>
+
+        <div class="cli-guide-step">
+          <span class="cli-guide-num">2</span>
+          <div>
+            <strong>Top-level help</strong> — proves the wrapper resolves Python
+            + dispatcher loads.
+            <pre class="cli-guide-cmd">./alphatest --help</pre>
+            <span class="cli-guide-hint">Expect: lists <code>run</code>,
+              <code>shuffle</code>, <code>list</code>, <code>verify</code>.</span>
+          </div>
+        </div>
+
+        <div class="cli-guide-step">
+          <span class="cli-guide-num">3</span>
+          <div>
+            <strong>List saved alphas</strong> — proves the SQLite reader
+            (instant, no engine).
+            <pre class="cli-guide-cmd">./alphatest list --limit 5
+./alphatest list --order sharpe --limit 10</pre>
+            <span class="cli-guide-hint">Expect: a fixed-width table; the
+              Code/Data columns are <code>—</code> for alphas saved before
+              the provenance feature shipped.</span>
+          </div>
+        </div>
+
+        <div class="cli-guide-step">
+          <span class="cli-guide-num">4</span>
+          <div>
+            <strong>Run a backtest</strong> — proves the engine path (~5–10 s
+            on a warm cache, ~30 s cold).
+            <pre class="cli-guide-cmd">./alphatest run "rank(close) - rank(open)"
+./alphatest run "rank(close)" --neutralization sector --oos</pre>
+            <span class="cli-guide-hint">Same Sharpe / annual return / drawdown
+              numbers the web UI shows for the identical expression.</span>
+          </div>
+        </div>
+
+        <div class="cli-guide-step">
+          <span class="cli-guide-num">5</span>
+          <div>
+            <strong>Verify a saved alpha</strong> — re-runs and diffs the three
+            signatures.  Pick any id from step&nbsp;3.
+            <pre class="cli-guide-cmd">./alphatest verify 84</pre>
+            <span class="cli-guide-hint">Diagnostic prints whether the headline
+              reproduced and, if not, names the likely cause (code edit, data
+              refresh, or legacy alpha with no stored signatures).</span>
+          </div>
+        </div>
+
+        <div class="cli-guide-step">
+          <span class="cli-guide-num">6</span>
+          <div>
+            <strong>Exit codes</strong> — what makes the CLI useful in a CI
+            pipeline.
+            <pre class="cli-guide-cmd">./alphatest run "rank(close)" > /dev/null;            echo "ok:   $?"   # → 0
+./alphatest run "totally_undefined_field" > /dev/null; echo "err:  $?"   # → 1
+./alphatest verify 999999 > /dev/null;                 echo "miss: $?"   # → 2</pre>
+          </div>
+        </div>
+
+        <div class="cli-guide-step cli-guide-optional">
+          <span class="cli-guide-num">7</span>
+          <div>
+            <strong>(Optional) Shuffle leakage test</strong> — 1–3 min for a
+            50-shuffle run; only invoke when you actually want a leakage
+            verdict.
+            <pre class="cli-guide-cmd">./alphatest shuffle "rank(close)" --iters 25</pre>
+            <span class="cli-guide-hint">Exits 0 only when the verdict is
+              <code>real-signal</code>; <code>rank(close)</code> is a known
+              noise baseline so expect non-zero.</span>
+          </div>
+        </div>
+
+        <div class="cli-guide-tip">
+          <strong>Run the CLI tests</strong> from the same terminal:
+          <pre class="cli-guide-cmd">backend/.venv/bin/python -m pytest backend/tests/test_cli.py -v</pre>
+          Expect 19 passing in ~1 s.  The full backend suite
+          (<code>backend/tests/</code>) takes 7–8 min.
+        </div>
+      </div>
+    `,
+    [{ label: 'Close', primary: true, action: closeModal }]
+  );
+}
+
 async function runSampleAlpha() {
   // Set the editor to a known-good expression, then drive the Run button so
   // the spinner / disabled state behave exactly like a real click.
@@ -768,4 +899,6 @@ function renderResponse(resp) {
   charts.setData(isTs, resp.monthly_returns, {
     oos_timeseries: resp.oos_timeseries || null,
   });
+  // Tier 4 research charts (IC time series + decay + quintile + risk decomp)
+  researchCharts.render(isMetrics, resp.factor_decomposition || null);
 }
