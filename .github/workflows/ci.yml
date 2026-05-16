@@ -79,8 +79,11 @@ jobs:
         # Don't fail the whole CI just because a download timed out.
         continue-on-error: true
 
-      - name: Install pytest-cov
-        run: pip install pytest-cov==6.0.0
+      - name: Install pytest-cov + hypothesis
+        # hypothesis powers backend/tests/test_operators_hypothesis.py (Tier 5 #9).
+        # Kept out of production requirements.txt (test-only); installed here
+        # alongside pytest-cov so the test-backend job has both.
+        run: pip install pytest-cov==6.0.0 'hypothesis>=6.100,<7'
 
       - name: Run pytest with coverage
         run: |
