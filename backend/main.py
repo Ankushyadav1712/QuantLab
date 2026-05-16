@@ -1375,6 +1375,9 @@ def _make_config(settings: dict | None, *, run_oos: bool = True) -> SimulationCo
         walk_forward_step_days=int(s.get("walk_forward_step_days", 63)),
         execution_lag_days=max(1, int(s.get("execution_lag_days", 1))),
         point_in_time_universe=bool(s.get("point_in_time_universe", False)),
+        # PDF Section 9.2 — ADV liquidity filter.  Default 0 (off) so saved
+        # alphas keep headline numbers stable; opt in via the settings panel.
+        min_adv_dollars=float(s.get("min_adv_dollars", 0.0)),
     )
 
 
@@ -1398,6 +1401,7 @@ def _config_to_dict(cfg: SimulationConfig) -> dict[str, Any]:
         "walk_forward_step_days": cfg.walk_forward_step_days,
         "execution_lag_days": cfg.execution_lag_days,
         "point_in_time_universe": cfg.point_in_time_universe,
+        "min_adv_dollars": cfg.min_adv_dollars,
     }
 
 
