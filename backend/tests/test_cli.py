@@ -92,7 +92,7 @@ def _make_test_db(tmp_path: Path) -> Path:
         "created_at, code_signature, data_signature, git_hash) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            ("low",  "rank(close)",          0.3, 0.05, -0.12, now, "aaaaaa", "111111", "g1"),
+            ("low", "rank(close)", 0.3, 0.05, -0.12, now, "aaaaaa", "111111", "g1"),
             ("high", "rank(close) - rank(open)", 1.2, 0.18, -0.08, now, "bbbbbb", "222222", "g2"),
         ],
     )
@@ -167,17 +167,27 @@ def test_verify_load_alpha_roundtrip(tmp_path):
 def test_verify_outcome_ok_when_sharpe_matches_within_tol():
     """The pure verdict logic — exercised without running a backtest."""
     stored = StoredAlpha(
-        id=1, name="x", expression="rank(close)",
-        sharpe=1.000, code_signature="aaa", data_signature="bbb", git_hash="g",
+        id=1,
+        name="x",
+        expression="rank(close)",
+        sharpe=1.000,
+        code_signature="aaa",
+        data_signature="bbb",
+        git_hash="g",
     )
     # Manually construct the outcome that `verify()` would return for a clean
     # reproduction (within tol, no signature drift).
     out = VerifyOutcome(
-        ok=True, stored=stored,
+        ok=True,
+        stored=stored,
         fresh_sharpe=1.0005,
-        fresh_code_signature="aaa", fresh_data_signature="bbb", fresh_git_hash="g",
+        fresh_code_signature="aaa",
+        fresh_data_signature="bbb",
+        fresh_git_hash="g",
         sharpe_delta=0.0005,
-        code_changed=False, data_changed=False, git_changed=False,
+        code_changed=False,
+        data_changed=False,
+        git_changed=False,
     )
     assert out.ok is True
     assert abs(out.sharpe_delta) < 1e-3
@@ -187,15 +197,25 @@ def test_print_outcome_legacy_alpha_message(capsys):
     """Saved-before-provenance alphas (all stored sigs None) get a tailored
     diagnostic instead of the misleading 'non-determinism' line."""
     stored = StoredAlpha(
-        id=1, name="old", expression="rank(close)",
-        sharpe=0.87, code_signature=None, data_signature=None, git_hash=None,
+        id=1,
+        name="old",
+        expression="rank(close)",
+        sharpe=0.87,
+        code_signature=None,
+        data_signature=None,
+        git_hash=None,
     )
     out = VerifyOutcome(
-        ok=False, stored=stored,
+        ok=False,
+        stored=stored,
         fresh_sharpe=-0.15,
-        fresh_code_signature="abc", fresh_data_signature="def", fresh_git_hash="g",
+        fresh_code_signature="abc",
+        fresh_data_signature="def",
+        fresh_git_hash="g",
         sharpe_delta=-1.02,
-        code_changed=False, data_changed=False, git_changed=False,
+        code_changed=False,
+        data_changed=False,
+        git_changed=False,
     )
     verify._print_outcome(out, tolerance=1e-3)
     txt = capsys.readouterr().out
@@ -205,15 +225,25 @@ def test_print_outcome_legacy_alpha_message(capsys):
 
 def test_verify_outcome_flags_drift_when_sharpe_diverges():
     stored = StoredAlpha(
-        id=1, name="x", expression="rank(close)",
-        sharpe=1.0, code_signature="aaa", data_signature="bbb", git_hash="g",
+        id=1,
+        name="x",
+        expression="rank(close)",
+        sharpe=1.0,
+        code_signature="aaa",
+        data_signature="bbb",
+        git_hash="g",
     )
     out = VerifyOutcome(
-        ok=False, stored=stored,
+        ok=False,
+        stored=stored,
         fresh_sharpe=1.5,
-        fresh_code_signature="ccc", fresh_data_signature="bbb", fresh_git_hash="g",
+        fresh_code_signature="ccc",
+        fresh_data_signature="bbb",
+        fresh_git_hash="g",
         sharpe_delta=0.5,
-        code_changed=True, data_changed=False, git_changed=False,
+        code_changed=True,
+        data_changed=False,
+        git_changed=False,
     )
     assert out.ok is False
     assert out.code_changed

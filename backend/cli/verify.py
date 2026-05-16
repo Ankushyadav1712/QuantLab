@@ -199,12 +199,15 @@ def _print_outcome(o: VerifyOutcome, *, tolerance: float) -> None:
         marker = "✓" if o.ok else "✗"
         print(f"  Sharpe match:  {marker} Δ = {o.sharpe_delta:+.4f} (tol {tolerance})")
 
-    print(f"  Fresh code sig: {o.fresh_code_signature or '—'}"
-          + (" (changed)" if o.code_changed else ""))
-    print(f"  Fresh data sig: {o.fresh_data_signature or '—'}"
-          + (" (changed)" if o.data_changed else ""))
-    print(f"  Fresh git hash: {o.fresh_git_hash or '—'}"
-          + (" (changed)" if o.git_changed else ""))
+    print(
+        f"  Fresh code sig: {o.fresh_code_signature or '—'}"
+        + (" (changed)" if o.code_changed else "")
+    )
+    print(
+        f"  Fresh data sig: {o.fresh_data_signature or '—'}"
+        + (" (changed)" if o.data_changed else "")
+    )
+    print(f"  Fresh git hash: {o.fresh_git_hash or '—'}" + (" (changed)" if o.git_changed else ""))
 
     # Diagnostic story.  When all three are stable and Sharpe matches, you
     # have full reproducibility.  When one changes, we name the likely cause.

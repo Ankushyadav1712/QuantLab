@@ -52,7 +52,7 @@ def load_context(universe_id: str | None = None, *, verbose: bool = True) -> Loa
 
     uid = universe_id or default_universe_id()
     u = get_universe(uid)
-    tickers = u["tickers"] if isinstance(u, dict) else u.tickers
+    tickers = list(u["tickers"])
     gics_map = gics_for(tickers)
 
     return LoadedContext(
