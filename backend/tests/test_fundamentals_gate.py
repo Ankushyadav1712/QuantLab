@@ -13,14 +13,20 @@ mock the yfinance fetch.
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
-from main import _FUNDAMENTALS_CATEGORIES, _state, app
+from main import _FUNDAMENTALS_CATEGORIES, _state
 
 
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
+@pytest.fixture(autouse=True)
+def _restore_fundamentals_state():
+    """Save/restore the fundamentals gate so edits in this module don't leak
+    into other test modules sharing the same session-scoped app instance."""
+    orig_avail = _state.get("fundamentals_available")
+    orig_pct = _state.get("fundamentals_coverage_pct")
+    yield
+    if orig_avail is not None:
+        _state["fundamentals_available"] = orig_avail
+    if orig_pct is not None:
+        _state["fundamentals_coverage_pct"] = orig_pct
 
 
 def _set_fundamentals(available: bool, coverage_pct: float = 0.0):
