@@ -1072,7 +1072,9 @@ async def lifespan(_app: FastAPI):
 
             spy_fetcher = DataFetcher()
             spy_frames = spy_fetcher.download_universe(tickers=["SPY"], compute_derived=False)
-            spy_returns = spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
+            spy_returns = (
+                spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
+            )
 
             ff5 = download_ff5_daily()
 
@@ -1093,7 +1095,9 @@ async def lifespan(_app: FastAPI):
                     ticker_list = list(close_mat.columns)
                     for name, series in macro_series.items():
                         try:
-                            _state["data"][name] = macro_broadcast(series, close_mat.index, ticker_list)
+                            _state["data"][name] = macro_broadcast(
+                                series, close_mat.index, ticker_list
+                            )
                             macro_present.append(name)
                         except Exception as exc:
                             warnings.warn(f"[macro:{name}] broadcast failed: {exc}")
@@ -1138,7 +1142,9 @@ async def lifespan(_app: FastAPI):
                     "n_universes": len(list_universes()),
                     "ff5_present": bool(ff5 is not None and not ff5.empty),
                     "fundamentals_available": _state.get("fundamentals_available", False),
-                    "fundamentals_coverage_pct": round(_state.get("fundamentals_coverage_pct", 0.0), 1),
+                    "fundamentals_coverage_pct": round(
+                        _state.get("fundamentals_coverage_pct", 0.0), 1
+                    ),
                     "auth_enabled": bool(API_TOKEN),
                 },
             )
@@ -1146,11 +1152,13 @@ async def lifespan(_app: FastAPI):
             log.error(f"lifespan: background data download failed: {e}")
 
     import sys
+
     is_test = "pytest" in sys.modules or os.getenv("ENVIRONMENT") == "test"
     if is_test:
         load_data_sync()
     else:
         import asyncio
+
         asyncio.create_task(asyncio.to_thread(load_data_sync))
 
     yield
@@ -1857,8 +1865,7 @@ def validate(request: Request, req: ValidateRequest):
     del request
     if not _state.get("ready", False):
         raise HTTPException(
-            status_code=503,
-            detail="System is downloading financial data. Please wait a moment."
+            status_code=503, detail="System is downloading financial data. Please wait a moment."
         )
     try:
         ast = Parser().parse(req.expression)
@@ -1911,8 +1918,7 @@ def simulate(request: Request, req: SimulationRequest):
     del request  # required-by-name for slowapi; not used in the handler
     if not _state.get("ready", False):
         raise HTTPException(
-            status_code=503,
-            detail="System is downloading financial data. Please wait a moment."
+            status_code=503, detail="System is downloading financial data. Please wait a moment."
         )
     # Lint before evaluating so we catch look-ahead bias before any
     # inflated-Sharpe number ever leaves the server.
@@ -1992,8 +1998,7 @@ def sweep(request: Request, req: SweepRequest):
     del request  # required-by-name for slowapi
     if not _state.get("ready", False):
         raise HTTPException(
-            status_code=503,
-            detail="System is downloading financial data. Please wait a moment."
+            status_code=503, detail="System is downloading financial data. Please wait a moment."
         )
     try:
         expansion = expand_sweeps(req.expression, max_combinations=req.max_combinations)
@@ -2072,8 +2077,7 @@ def compare_alphas(request: Request, req: CompareRequest):
     del request  # required-by-name for slowapi
     if not _state.get("ready", False):
         raise HTTPException(
-            status_code=503,
-            detail="System is downloading financial data. Please wait a moment."
+            status_code=503, detail="System is downloading financial data. Please wait a moment."
         )
 
     cfg = _make_config(req.settings, run_oos=False)
@@ -2143,8 +2147,7 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
     del request  # required-by-name for slowapi
     if not _state.get("ready", False):
         raise HTTPException(
-            status_code=503,
-            detail="System is downloading financial data. Please wait a moment."
+            status_code=503, detail="System is downloading financial data. Please wait a moment."
         )
     if not req.alphas:
         raise HTTPException(status_code=400, detail="No alphas provided")
@@ -2226,8 +2229,7 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
 async def save_alpha(req: AlphaSaveRequest):
     if not _state.get("ready", False):
         raise HTTPException(
-            status_code=503,
-            detail="System is downloading financial data. Please wait a moment."
+            status_code=503, detail="System is downloading financial data. Please wait a moment."
         )
     alpha = _evaluate(req.expression)
     cfg = _make_config(req.settings)
@@ -2470,8 +2472,7 @@ async def alphas_correlations(req: CorrelationRequest):
 def data_preview(ticker: str):
     if not _state.get("ready", False):
         raise HTTPException(
-            status_code=503,
-            detail="System is downloading financial data. Please wait a moment."
+            status_code=503, detail="System is downloading financial data. Please wait a moment."
         )
     fetcher: DataFetcher = _state["fetcher"]
 
