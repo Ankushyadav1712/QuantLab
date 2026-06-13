@@ -1048,109 +1048,111 @@ _state: dict[str, Any] = {}
 async def lifespan(_app: FastAPI):
     await init_db()
 
-    fetcher = DataFetcher()
-    # Load the union of every built-in universe so that switching universes
-    # at request time is just a column-filter on already-resolved matrices.
-    # Custom universes (Phase 2) lazy-load any tickers missing from this set.
-    pool = sorted(universe_all_tickers())
-    fetcher.download_universe(tickers=pool)
-
-    spy_fetcher = DataFetcher()
-    spy_frames = spy_fetcher.download_universe(tickers=["SPY"], compute_derived=False)
-    spy_returns = spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
-
-    # Fama-French 5 factor returns (Mkt-RF, SMB, HML, RMW, CMA + RF) cached
-    # weekly.  Network failure is non-fatal — factor decomposition just gets
-    # skipped in /api/simulate if the DataFrame is empty.
-    ff5 = download_ff5_daily()
-
-    _state["fetcher"] = fetcher
-    _state["spy_returns"] = spy_returns
-    _state["ff5"] = ff5
-    _state["data"] = {field: fetcher.get_data_matrix(field) for field in ALL_FIELDS}
-    # GICS-as-DataField wiring: build (dates × tickers) string frames for each
-    # GICS level so expressions can reference `sector`, `industry`, etc. and
-    # feed them into group_* operators.  Uses the close matrix's index/columns
-    # so shapes always align with whatever the user is computing on.
-    close_mat = _state["data"].get("close")
-    if close_mat is not None and not close_mat.empty:
-        _state["gics_data"] = gics_data_frames(close_mat.index, list(close_mat.columns))
-    else:
-        _state["gics_data"] = {}
-
-    # Phase C — FRED macro fields broadcast to (dates × tickers).  Network
-    # failure is non-fatal; missing fields just don't appear in `_state["data"]`
-    # and any expression referencing them surfaces a clear "Unknown data field"
-    # error from the evaluator.
-    macro_present: list[str] = []
-    if close_mat is not None and not close_mat.empty:
-        macro_series = download_macro()
-        ticker_list = list(close_mat.columns)
-        for name, series in macro_series.items():
-            try:
-                _state["data"][name] = macro_broadcast(series, close_mat.index, ticker_list)
-                macro_present.append(name)
-            except Exception as exc:
-                warnings.warn(f"[macro:{name}] broadcast failed: {exc}")
-    _state["macro_present"] = macro_present
-
-    # Phase C — yfinance fundamentals.  Slow first-boot (~2 minutes for 95
-    # tickers, weekly cache thereafter).  Tickers that fail yfinance contribute
-    # NaN columns; the loader never raises.  Wrapped in try/except so a
-    # catastrophic yfinance schema break doesn't kill startup.
-    fundamentals_present: list[str] = []
-    if close_mat is not None and not close_mat.empty:
-        try:
-            fund_matrices = download_fundamentals(
-                tickers=list(close_mat.columns),
-                daily_index=close_mat.index,
-                close_matrix=close_mat,
-            )
-            for name, matrix in fund_matrices.items():
-                _state["data"][name] = matrix
-                fundamentals_present.append(name)
-        except Exception as exc:
-            warnings.warn(f"[fundamentals] load failed: {exc}; skipping")
-    _state["fundamentals_present"] = fundamentals_present
+    # Pre-populate empty states so endpoints don't fail immediately
+    _state["fetcher"] = DataFetcher()
+    _state["spy_returns"] = pd.Series(dtype=float)
+    _state["ff5"] = pd.DataFrame()
+    _state["data"] = {}
+    _state["gics_data"] = {}
+    _state["macro_present"] = []
+    _state["fundamentals_present"] = []
     _state["fundamentals_lag_quarters"] = LAG_QUARTERS
-
-    # Coverage gate: yfinance's free fundamentals API only returns the 5 most
-    # recent quarters AND silently rate-limits at universe sizes > ~30 tickers.
-    # Result: matrices may exist in _state but be mostly-NaN.  Probing one
-    # canonical field (`revenue`) tells us whether fundamentals are usable.
-    # When below ``_FUNDAMENTALS_MIN_COVERAGE``, we mark the whole block as
-    # unavailable so /api/operators hides them and /api/validate gives a
-    # clear error instead of letting users hit the >50%-NaN backtest filter.
-    fundamentals_available = False
-    fundamentals_coverage_pct = 0.0
-    canary = _state["data"].get("revenue")
-    if canary is not None and not canary.empty:
-        n_total = canary.shape[0] * canary.shape[1]
-        n_nan = int(canary.isna().sum().sum())
-        fundamentals_coverage_pct = 100.0 * (1.0 - n_nan / n_total) if n_total else 0.0
-        fundamentals_available = fundamentals_coverage_pct >= _FUNDAMENTALS_MIN_COVERAGE
-    _state["fundamentals_available"] = fundamentals_available
-    _state["fundamentals_coverage_pct"] = fundamentals_coverage_pct
-
-    # Reproducibility provenance: hash the source files + git HEAD once at
-    # boot.  Reused by every alpha save so we don't re-hash 15 files per
-    # request.  Data signature is *not* cached — it depends on close-matrix
-    # contents which change after a cache refresh.
+    _state["fundamentals_available"] = False
+    _state["fundamentals_coverage_pct"] = 0.0
     _state["code_signature"] = compute_code_signature()
     _state["git_hash"] = compute_git_hash()
-    log.info(
-        "lifespan: ready",
-        extra={
-            "environment": ENVIRONMENT,
-            "n_fields": len(_state["data"]),
-            "n_tickers": len(fetcher._frames) if hasattr(fetcher, "_frames") else 0,
-            "n_universes": len(list_universes()),
-            "ff5_present": bool(ff5 is not None and not ff5.empty),
-            "fundamentals_available": _state.get("fundamentals_available", False),
-            "fundamentals_coverage_pct": round(_state.get("fundamentals_coverage_pct", 0.0), 1),
-            "auth_enabled": bool(API_TOKEN),
-        },
-    )
+    _state["ready"] = False
+
+    def load_data_sync():
+        try:
+            log.info("lifespan: background data download starting")
+            fetcher = _state["fetcher"]
+            pool = sorted(universe_all_tickers())
+            fetcher.download_universe(tickers=pool)
+
+            spy_fetcher = DataFetcher()
+            spy_frames = spy_fetcher.download_universe(tickers=["SPY"], compute_derived=False)
+            spy_returns = spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
+
+            ff5 = download_ff5_daily()
+
+            _state["spy_returns"] = spy_returns
+            _state["ff5"] = ff5
+            _state["data"] = {field: fetcher.get_data_matrix(field) for field in ALL_FIELDS}
+
+            close_mat = _state["data"].get("close")
+            if close_mat is not None and not close_mat.empty:
+                _state["gics_data"] = gics_data_frames(close_mat.index, list(close_mat.columns))
+            else:
+                _state["gics_data"] = {}
+
+            macro_present: list[str] = []
+            if close_mat is not None and not close_mat.empty:
+                try:
+                    macro_series = download_macro()
+                    ticker_list = list(close_mat.columns)
+                    for name, series in macro_series.items():
+                        try:
+                            _state["data"][name] = macro_broadcast(series, close_mat.index, ticker_list)
+                            macro_present.append(name)
+                        except Exception as exc:
+                            warnings.warn(f"[macro:{name}] broadcast failed: {exc}")
+                except Exception as exc:
+                    warnings.warn(f"[macro] load failed: {exc}")
+            _state["macro_present"] = macro_present
+
+            fundamentals_present: list[str] = []
+            if close_mat is not None and not close_mat.empty:
+                try:
+                    fund_matrices = download_fundamentals(
+                        tickers=list(close_mat.columns),
+                        daily_index=close_mat.index,
+                        close_matrix=close_mat,
+                    )
+                    for name, matrix in fund_matrices.items():
+                        _state["data"][name] = matrix
+                        fundamentals_present.append(name)
+                except Exception as exc:
+                    warnings.warn(f"[fundamentals] load failed: {exc}; skipping")
+            _state["fundamentals_present"] = fundamentals_present
+
+            fundamentals_available = False
+            fundamentals_coverage_pct = 0.0
+            canary = _state["data"].get("revenue")
+            if canary is not None and not canary.empty:
+                n_total = canary.shape[0] * canary.shape[1]
+                n_nan = int(canary.isna().sum().sum())
+                fundamentals_coverage_pct = 100.0 * (1.0 - n_nan / n_total) if n_total else 0.0
+                fundamentals_available = fundamentals_coverage_pct >= _FUNDAMENTALS_MIN_COVERAGE
+            _state["fundamentals_available"] = fundamentals_available
+            _state["fundamentals_coverage_pct"] = fundamentals_coverage_pct
+
+            # Update the ready state flag
+            _state["ready"] = True
+            log.info(
+                "lifespan: ready (background data load complete)",
+                extra={
+                    "environment": ENVIRONMENT,
+                    "n_fields": len(_state["data"]),
+                    "n_tickers": len(fetcher._frames) if hasattr(fetcher, "_frames") else 0,
+                    "n_universes": len(list_universes()),
+                    "ff5_present": bool(ff5 is not None and not ff5.empty),
+                    "fundamentals_available": _state.get("fundamentals_available", False),
+                    "fundamentals_coverage_pct": round(_state.get("fundamentals_coverage_pct", 0.0), 1),
+                    "auth_enabled": bool(API_TOKEN),
+                },
+            )
+        except Exception as e:
+            log.error(f"lifespan: background data download failed: {e}")
+
+    import sys
+    is_test = "pytest" in sys.modules or os.getenv("ENVIRONMENT") == "test"
+    if is_test:
+        load_data_sync()
+    else:
+        import asyncio
+        asyncio.create_task(asyncio.to_thread(load_data_sync))
+
     yield
     log.info("lifespan: shutdown")
 
@@ -1853,6 +1855,11 @@ def validate(request: Request, req: ValidateRequest):
     # `request` looks unused but slowapi requires a parameter named exactly
     # "request" to extract the client IP for the per-IP rate-limit key.
     del request
+    if not _state.get("ready", False):
+        raise HTTPException(
+            status_code=503,
+            detail="System is downloading financial data. Please wait a moment."
+        )
     try:
         ast = Parser().parse(req.expression)
     except ValueError as e:
@@ -1902,6 +1909,11 @@ def validate(request: Request, req: ValidateRequest):
 @limiter.limit(_LIMIT_SIMULATE)
 def simulate(request: Request, req: SimulationRequest):
     del request  # required-by-name for slowapi; not used in the handler
+    if not _state.get("ready", False):
+        raise HTTPException(
+            status_code=503,
+            detail="System is downloading financial data. Please wait a moment."
+        )
     # Lint before evaluating so we catch look-ahead bias before any
     # inflated-Sharpe number ever leaves the server.
     try:
@@ -1978,6 +1990,11 @@ def sweep(request: Request, req: SweepRequest):
     grid of summary metrics the frontend renders as a heatmap or table.
     """
     del request  # required-by-name for slowapi
+    if not _state.get("ready", False):
+        raise HTTPException(
+            status_code=503,
+            detail="System is downloading financial data. Please wait a moment."
+        )
     try:
         expansion = expand_sweeps(req.expression, max_combinations=req.max_combinations)
     except ValueError as e:
@@ -2053,6 +2070,11 @@ def compare_alphas(request: Request, req: CompareRequest):
     winner, they should run it through /api/simulate separately.
     """
     del request  # required-by-name for slowapi
+    if not _state.get("ready", False):
+        raise HTTPException(
+            status_code=503,
+            detail="System is downloading financial data. Please wait a moment."
+        )
 
     cfg = _make_config(req.settings, run_oos=False)
     _, gics_map_local, _ = _resolve_universe(req.settings or {})
@@ -2119,6 +2141,11 @@ def compare_alphas(request: Request, req: CompareRequest):
 @limiter.limit(_LIMIT_SIMULATE)
 def multi_blend(request: Request, req: MultiAlphaRequest):
     del request  # required-by-name for slowapi
+    if not _state.get("ready", False):
+        raise HTTPException(
+            status_code=503,
+            detail="System is downloading financial data. Please wait a moment."
+        )
     if not req.alphas:
         raise HTTPException(status_code=400, detail="No alphas provided")
 
@@ -2197,6 +2224,11 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
 
 @app.post("/api/alphas", dependencies=[Depends(require_api_token)])
 async def save_alpha(req: AlphaSaveRequest):
+    if not _state.get("ready", False):
+        raise HTTPException(
+            status_code=503,
+            detail="System is downloading financial data. Please wait a moment."
+        )
     alpha = _evaluate(req.expression)
     cfg = _make_config(req.settings)
     _, gics_map, universe_id = _resolve_universe(req.settings or {})
@@ -2436,6 +2468,11 @@ async def alphas_correlations(req: CorrelationRequest):
 
 @app.get("/api/data/preview")
 def data_preview(ticker: str):
+    if not _state.get("ready", False):
+        raise HTTPException(
+            status_code=503,
+            detail="System is downloading financial data. Please wait a moment."
+        )
     fetcher: DataFetcher = _state["fetcher"]
 
     # Start with the per-ticker frame (the 7 base fields).
