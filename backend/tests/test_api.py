@@ -6,14 +6,6 @@ fixture so we don't pay that cost per test.
 """
 
 import pytest
-from fastapi.testclient import TestClient
-from main import app
-
-
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
 
 
 def test_health_returns_200(client):

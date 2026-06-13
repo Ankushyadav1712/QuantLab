@@ -158,63 +158,58 @@ def test_build_provenance_passes_through_data_signature():
 # ---------- /api/alphas save → load round-trip ----------
 
 
-def test_save_alpha_round_trip_includes_provenance():
+def test_save_alpha_round_trip_includes_provenance(client):
     """End-to-end: save an alpha, fetch it back, verify the three signature
     columns are populated on both the list endpoint and the by-id endpoint."""
     import os
 
-    os.environ.setdefault("ENVIRONMENT", "development")
-    from fastapi.testclient import TestClient
-    from main import app
-
     token = os.environ.get("QUANTLAB_API_TOKEN", "")
     auth_header = {"Authorization": f"Bearer {token}"}
 
-    with TestClient(app) as client:
-        # Save a simple alpha
-        save_r = client.post(
-            "/api/alphas",
-            json={
-                "name": "provenance-rt-test",
-                "expression": "rank(close)",
-                "notes": "test",
-                "settings": {},
-            },
-            headers=auth_header,
-        )
-        assert save_r.status_code in (200, 201), save_r.text
-        alpha_id = save_r.json().get("id")
-        assert alpha_id is not None
+    # Save a simple alpha
+    save_r = client.post(
+        "/api/alphas",
+        json={
+            "name": "provenance-rt-test",
+            "expression": "rank(close)",
+            "notes": "test",
+            "settings": {},
+        },
+        headers=auth_header,
+    )
+    assert save_r.status_code in (200, 201), save_r.text
+    alpha_id = save_r.json().get("id")
+    assert alpha_id is not None
 
-        # Verify list endpoint includes signature columns
-        list_r = client.get("/api/alphas")
-        rows = [r for r in list_r.json() if r["id"] == alpha_id]
-        assert len(rows) == 1
-        row = rows[0]
-        assert "code_signature" in row
-        assert "data_signature" in row
-        assert "git_hash" in row
-        assert row["code_signature"] is not None
-        assert row["data_signature"] is not None
-        assert len(row["code_signature"]) == 12
-        assert len(row["data_signature"]) == 12
+    # Verify list endpoint includes signature columns
+    list_r = client.get("/api/alphas")
+    rows = [r for r in list_r.json() if r["id"] == alpha_id]
+    assert len(rows) == 1
+    row = rows[0]
+    assert "code_signature" in row
+    assert "data_signature" in row
+    assert "git_hash" in row
+    assert row["code_signature"] is not None
+    assert row["data_signature"] is not None
+    assert len(row["code_signature"]) == 12
+    assert len(row["data_signature"]) == 12
 
-        # Verify by-id endpoint also includes them (via SELECT *)
-        load_r = client.get(f"/api/alphas/{alpha_id}")
-        body = load_r.json()
-        assert body["code_signature"] == row["code_signature"]
-        assert body["data_signature"] == row["data_signature"]
-        assert body["git_hash"] == row["git_hash"]
+    # Verify by-id endpoint also includes them (via SELECT *)
+    load_r = client.get(f"/api/alphas/{alpha_id}")
+    body = load_r.json()
+    assert body["code_signature"] == row["code_signature"]
+    assert body["data_signature"] == row["data_signature"]
+    assert body["git_hash"] == row["git_hash"]
 
-        # And the result_json mirror has the same provenance dict
-        import json as _json
+    # And the result_json mirror has the same provenance dict
+    import json as _json
 
-        result = body.get("result")
-        if isinstance(result, str):
-            result = _json.loads(result)
-        provenance = (result or {}).get("provenance") or {}
-        assert provenance.get("code_signature") == row["code_signature"]
-        assert provenance.get("data_signature") == row["data_signature"]
+    result = body.get("result")
+    if isinstance(result, str):
+        result = _json.loads(result)
+    provenance = (result or {}).get("provenance") or {}
+    assert provenance.get("code_signature") == row["code_signature"]
+    assert provenance.get("data_signature") == row["data_signature"]
 
-        # Cleanup — leave the SQLite as we found it
-        client.delete(f"/api/alphas/{alpha_id}", headers=auth_header)
+    # Cleanup — leave the SQLite as we found it
+    client.delete(f"/api/alphas/{alpha_id}", headers=auth_header)

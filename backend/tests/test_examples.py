@@ -11,8 +11,6 @@ import pytest
 from data.example_alphas import EXAMPLE_ALPHAS, get_example, list_examples
 from engine.lint import lint_ast
 from engine.parser import Parser
-from fastapi.testclient import TestClient
-from main import app
 
 # ---------- Catalog shape ----------
 
@@ -103,12 +101,6 @@ def test_list_examples_returns_all():
 
 
 # ---------- Endpoints ----------
-
-
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
 
 
 def test_get_examples_returns_catalog(client):

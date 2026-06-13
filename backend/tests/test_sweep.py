@@ -2,8 +2,6 @@
 
 import pytest
 from engine.sweep import combo_for_index, expand_sweeps, has_sweep_syntax
-from fastapi.testclient import TestClient
-from main import app
 
 # ---------- Detection ----------
 
@@ -108,12 +106,6 @@ def test_expand_sweeps_rejects_zero_step():
 
 
 # ---------- Endpoint ----------
-
-
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
 
 
 def test_sweep_endpoint_runs_each_combination(client):
