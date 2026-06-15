@@ -167,6 +167,82 @@ class DataFetcher:
             return None
         return self._normalize(raw)
 
+    def _download_batch(self, tickers: list[str], start: str, end: str) -> dict[str, pd.DataFrame]:
+        """Fetch multiple tickers in one yf.download() call.
+
+        Returns ``{ticker: normalized_df}`` for every ticker that succeeded.
+        Tickers that are missing from the result (yfinance silently drops
+        them) are retried individually via ``_download_one``.
+        """
+        if not tickers:
+            return {}
+
+        try:
+            raw = yf.download(
+                tickers,
+                start=start,
+                end=end,
+                progress=False,
+                auto_adjust=True,
+                threads=True,
+                group_by="ticker",
+            )
+        except Exception as exc:
+            warnings.warn(f"[batch] download failed: {exc}; falling back to serial")
+            return self._download_serial(tickers, start, end)
+
+        if raw is None or raw.empty:
+            warnings.warn("[batch] no data returned; falling back to serial")
+            return self._download_serial(tickers, start, end)
+
+        result: dict[str, pd.DataFrame] = {}
+        retry: list[str] = []
+
+        # Single-ticker batch returns a flat DataFrame (no ticker level),
+        # multi-ticker returns MultiIndex columns (ticker, field).
+        if len(tickers) == 1:
+            ticker = tickers[0]
+            try:
+                df = self._normalize(raw)
+                if df is not None and not df.empty:
+                    result[ticker] = df
+                else:
+                    retry.append(ticker)
+            except Exception:
+                retry.append(ticker)
+        else:
+            for ticker in tickers:
+                try:
+                    ticker_df = raw[ticker].copy()
+                    # Drop columns that are all NaN (ticker had no data)
+                    ticker_df = ticker_df.dropna(how="all", axis=1)
+                    if ticker_df.empty or ticker_df.shape[1] == 0:
+                        retry.append(ticker)
+                        continue
+                    df = self._normalize(ticker_df)
+                    if df is not None and not df.empty:
+                        result[ticker] = df
+                    else:
+                        retry.append(ticker)
+                except (KeyError, Exception):
+                    retry.append(ticker)
+
+        # Retry failed tickers one-by-one
+        if retry:
+            warnings.warn(f"[batch] retrying {len(retry)} tickers serially: {retry}")
+            result.update(self._download_serial(retry, start, end))
+
+        return result
+
+    def _download_serial(self, tickers: list[str], start: str, end: str) -> dict[str, pd.DataFrame]:
+        """Fallback: download tickers one at a time."""
+        result: dict[str, pd.DataFrame] = {}
+        for ticker in tickers:
+            df = self._download_one(ticker, start, end)
+            if df is not None:
+                result[ticker] = df
+        return result
+
     def download_universe(
         self,
         tickers: Iterable[str] = UNIVERSE,
@@ -175,6 +251,8 @@ class DataFetcher:
         compute_derived: bool = True,
     ) -> dict[str, pd.DataFrame]:
         result: dict[str, pd.DataFrame] = {}
+        need_download: list[str] = []
+
         for ticker in tickers:
             path = self._cache_path(ticker)
             if self._is_cache_fresh(path):
@@ -184,15 +262,17 @@ class DataFetcher:
                     continue
                 except Exception as exc:
                     warnings.warn(f"[{ticker}] cache read failed ({exc}); re-downloading")
+            need_download.append(ticker)
 
-            df = self._download_one(ticker, start, end)
-            if df is None:
-                continue
-            try:
-                df.to_parquet(path)
-            except Exception as exc:
-                warnings.warn(f"[{ticker}] cache write failed: {exc}")
-            result[ticker] = df
+        # Batch-download all cache misses in one HTTP call
+        if need_download:
+            batch_result = self._download_batch(need_download, start, end)
+            for ticker, df in batch_result.items():
+                try:
+                    df.to_parquet(self._cache_path(ticker))
+                except Exception as exc:
+                    warnings.warn(f"[{ticker}] cache write failed: {exc}")
+                result[ticker] = df
 
         self._frames = result
         self._build_matrices(compute_derived=compute_derived)
