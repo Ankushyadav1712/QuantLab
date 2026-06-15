@@ -1065,18 +1065,39 @@ async def lifespan(_app: FastAPI):
 
     def load_data_sync():
         try:
+            from concurrent.futures import ThreadPoolExecutor
+
             log.info("lifespan: background data download starting")
             fetcher = _state["fetcher"]
             pool = sorted(universe_all_tickers())
-            fetcher.download_universe(tickers=pool)
 
+            # ---- Phase 1: parallel independent downloads ----
+            # Universe, SPY, FF5, and macro are independent of each other.
+            # Run them concurrently to reduce wall-clock time from
+            # sum(all) to max(all).
             spy_fetcher = DataFetcher()
-            spy_frames = spy_fetcher.download_universe(tickers=["SPY"], compute_derived=False)
+
+            def _dl_universe():
+                fetcher.download_universe(tickers=pool)
+
+            def _dl_spy():
+                return spy_fetcher.download_universe(tickers=["SPY"], compute_derived=False)
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                fut_universe = executor.submit(_dl_universe)
+                fut_spy = executor.submit(_dl_spy)
+                fut_ff5 = executor.submit(download_ff5_daily)
+                fut_macro = executor.submit(download_macro)
+
+                # Wait for all four to complete
+                fut_universe.result()
+                spy_frames = fut_spy.result()
+                ff5 = fut_ff5.result()
+                macro_result = fut_macro.result()
+
             spy_returns = (
                 spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
             )
-
-            ff5 = download_ff5_daily()
 
             _state["spy_returns"] = spy_returns
             _state["ff5"] = ff5
@@ -1088,23 +1109,19 @@ async def lifespan(_app: FastAPI):
             else:
                 _state["gics_data"] = {}
 
+            # ---- Phase 2: broadcast macro (depends on close_mat) ----
             macro_present: list[str] = []
-            if close_mat is not None and not close_mat.empty:
-                try:
-                    macro_series = download_macro()
-                    ticker_list = list(close_mat.columns)
-                    for name, series in macro_series.items():
-                        try:
-                            _state["data"][name] = macro_broadcast(
-                                series, close_mat.index, ticker_list
-                            )
-                            macro_present.append(name)
-                        except Exception as exc:
-                            warnings.warn(f"[macro:{name}] broadcast failed: {exc}")
-                except Exception as exc:
-                    warnings.warn(f"[macro] load failed: {exc}")
+            if close_mat is not None and not close_mat.empty and macro_result:
+                ticker_list = list(close_mat.columns)
+                for name, series in macro_result.items():
+                    try:
+                        _state["data"][name] = macro_broadcast(series, close_mat.index, ticker_list)
+                        macro_present.append(name)
+                    except Exception as exc:
+                        warnings.warn(f"[macro:{name}] broadcast failed: {exc}")
             _state["macro_present"] = macro_present
 
+            # ---- Phase 3: fundamentals (depends on close_mat) ----
             fundamentals_present: list[str] = []
             if close_mat is not None and not close_mat.empty:
                 try:
