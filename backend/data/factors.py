@@ -86,7 +86,7 @@ def download_ff5_daily(force: bool = False) -> pd.DataFrame:
             warnings.warn(f"FF5 cache read failed ({exc}); re-downloading")
 
     try:
-        resp = httpx.get(FF5_URL, timeout=30.0, follow_redirects=True)
+        resp = httpx.get(FF5_URL, timeout=5.0, follow_redirects=True)
         resp.raise_for_status()
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             csv_name = next(

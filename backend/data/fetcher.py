@@ -198,34 +198,30 @@ class DataFetcher:
         result: dict[str, pd.DataFrame] = {}
         retry: list[str] = []
 
-        # Single-ticker batch returns a flat DataFrame (no ticker level),
-        # multi-ticker returns MultiIndex columns (ticker, field).
-        if len(tickers) == 1:
-            ticker = tickers[0]
+        for ticker in tickers:
             try:
-                df = self._normalize(raw)
+                if len(tickers) == 1:
+                    # yfinance returns a flat DataFrame if we only requested 1 ticker,
+                    # EXCEPT if we passed group_by="ticker", in which case it STILL
+                    # returns a MultiIndex.
+                    ticker_df = (
+                        raw[ticker].copy() if isinstance(raw.columns, pd.MultiIndex) else raw.copy()
+                    )
+                else:
+                    ticker_df = raw[ticker].copy()
+
+                # Drop columns that are all NaN (ticker had no data)
+                ticker_df = ticker_df.dropna(how="all", axis=1)
+                if ticker_df.empty or ticker_df.shape[1] == 0:
+                    retry.append(ticker)
+                    continue
+                df = self._normalize(ticker_df)
                 if df is not None and not df.empty:
                     result[ticker] = df
                 else:
                     retry.append(ticker)
-            except Exception:
+            except (KeyError, Exception):
                 retry.append(ticker)
-        else:
-            for ticker in tickers:
-                try:
-                    ticker_df = raw[ticker].copy()
-                    # Drop columns that are all NaN (ticker had no data)
-                    ticker_df = ticker_df.dropna(how="all", axis=1)
-                    if ticker_df.empty or ticker_df.shape[1] == 0:
-                        retry.append(ticker)
-                        continue
-                    df = self._normalize(ticker_df)
-                    if df is not None and not df.empty:
-                        result[ticker] = df
-                    else:
-                        retry.append(ticker)
-                except (KeyError, Exception):
-                    retry.append(ticker)
 
         # Retry failed tickers one-by-one
         if retry:
