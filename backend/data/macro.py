@@ -104,7 +104,7 @@ def _parse_fred_csv(text: str) -> pd.Series:
     return series
 
 
-def _download_one(field: str, series_id: str, *, timeout: float = 30.0) -> pd.Series | None:
+def _download_one(field: str, series_id: str, *, timeout: float = 5.0) -> pd.Series | None:
     """Fetch one FRED series, returning None on any error."""
     url = FRED_CSV_URL.format(series_id=series_id)
     try:
@@ -130,36 +130,45 @@ def download_macro(*, fetch_fn=_download_one) -> dict[str, pd.Series]:
     Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
     series_dict: dict[str, pd.Series] = {}
 
-    for field, (series_id, _desc) in FRED_SERIES.items():
-        path = _cache_path(field)
+    from concurrent.futures import ThreadPoolExecutor
 
-        # Cache hit + still fresh
+    # Phase 1: Load from cache or download in parallel
+    def _fetch_macro_field(field_name: str, sid: str) -> tuple[str, pd.Series | None]:
+        path = _cache_path(field_name)
         if _is_cache_fresh(path):
             try:
                 cached = pd.read_parquet(path)
-                # parquet stored a 1-col DataFrame; pull the series back out
-                series_dict[field] = cached.iloc[:, 0]
-                continue
+                return field_name, cached.iloc[:, 0]
             except Exception as exc:
-                warnings.warn(f"[macro:{field}] cache read failed ({exc}); re-downloading")
+                warnings.warn(f"[macro:{field_name}] cache read failed ({exc}); re-downloading")
 
-        fresh = fetch_fn(field, series_id)
+        fresh = fetch_fn(field_name, sid)
         if fresh is None:
-            # Cache miss + fetch failed → try a stale cache as last resort
             if path.exists():
                 try:
                     cached = pd.read_parquet(path)
-                    series_dict[field] = cached.iloc[:, 0]
-                    log.warning(f"macro {field} using stale cache")
+                    log.warning(f"macro {field_name} using stale cache")
+                    return field_name, cached.iloc[:, 0]
                 except Exception:
                     pass
-            continue
+            return field_name, None
 
-        series_dict[field] = fresh
         try:
-            fresh.to_frame(name=field).to_parquet(path)
+            fresh.to_frame(name=field_name).to_parquet(path)
         except Exception as exc:
-            warnings.warn(f"[macro:{field}] cache write failed: {exc}")
+            warnings.warn(f"[macro:{field_name}] cache write failed: {exc}")
+
+        return field_name, fresh
+
+    with ThreadPoolExecutor(max_workers=len(FRED_SERIES)) as executor:
+        futures = [
+            executor.submit(_fetch_macro_field, field, sid)
+            for field, (sid, _desc) in FRED_SERIES.items()
+        ]
+        for fut in futures:
+            field, series = fut.result()
+            if series is not None:
+                series_dict[field] = series
 
     # Derived spreads — only if the base series are present
     for name, _formula in DERIVED_MACRO_BUILDERS:
