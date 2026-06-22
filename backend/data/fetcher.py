@@ -113,12 +113,17 @@ def _streak_count(mask_df: pd.DataFrame) -> pd.DataFrame:
     return (cum - reset).astype(float)
 
 
+# Fields kept at float64 for cumulative-product precision in the backtester.
+_FLOAT64_FIELDS: frozenset[str] = frozenset({"close", "returns"})
+
+
 class DataFetcher:
     def __init__(self, cache_dir: Path = CACHE_DIR):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._frames: dict[str, pd.DataFrame] = {}
         self._matrix: dict[str, pd.DataFrame] = {}
+        self._loaded_tickers: set[str] = set()
 
     # ---------- paths / cache ----------
 
@@ -272,6 +277,10 @@ class DataFetcher:
 
         self._frames = result
         self._build_matrices(compute_derived=compute_derived)
+        # Track which tickers were loaded, then free per-ticker frames
+        # to save memory — all data now lives in self._matrix.
+        self._loaded_tickers = set(result.keys())
+        self._frames.clear()
         return result
 
     # ---------- matrix construction ----------
@@ -287,6 +296,10 @@ class DataFetcher:
                 continue
             m = pd.concat(series, axis=1).sort_index()
             m.columns.name = "ticker"
+            # Downcast to float32 to halve memory; keep close/returns at
+            # float64 for cumulative-product precision in the backtester.
+            if field not in _FLOAT64_FIELDS:
+                m = m.astype(np.float32)
             self._matrix[field] = m
 
         if compute_derived:
@@ -472,6 +485,11 @@ class DataFetcher:
         self._matrix["consecutive_up"] = _streak_count(up_day)
         self._matrix["consecutive_down"] = _streak_count(down_day)
 
+        # Downcast all derived fields to float32
+        for field in DERIVED_FIELDS:
+            if field in self._matrix and field not in _FLOAT64_FIELDS:
+                self._matrix[field] = self._matrix[field].astype(np.float32)
+
         self._save_derived_caches()
 
     def _load_derived_caches(self) -> bool:
@@ -533,7 +551,7 @@ class DataFetcher:
         matrices since the column set has changed.
         """
         wanted = [t.upper().strip() for t in tickers if t and t.strip()]
-        missing = [t for t in wanted if t not in self._frames]
+        missing = [t for t in wanted if t not in self._loaded_tickers]
         if not missing:
             return []
 
@@ -543,6 +561,7 @@ class DataFetcher:
             if self._is_cache_fresh(path):
                 try:
                     self._frames[t] = pd.read_parquet(path)
+                    self._loaded_tickers.add(t)
                     continue
                 except Exception:
                     pass
@@ -555,6 +574,7 @@ class DataFetcher:
             except Exception:
                 pass
             self._frames[t] = df
+            self._loaded_tickers.add(t)
 
         # Derived caches were keyed by the prior column set — recompute now.
         # Skip the per-field on-disk caches; they were stale the moment we
@@ -562,4 +582,6 @@ class DataFetcher:
         # request would just churn the cache for no benefit.
         self._matrix.clear()
         self._build_matrices(compute_derived=True)
+        # Free per-ticker frames again after rebuild
+        self._frames.clear()
         return failed
