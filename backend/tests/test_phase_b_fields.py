@@ -148,6 +148,7 @@ def test_momentum_z_60_is_momentum_over_vol(synth_fetcher):
         synth_fetcher._matrix["momentum_z_60"].values,
         expected.values,
         equal_nan=True,
+        rtol=1e-5,  # float32 derived fields have ~7 digits of precision
     )
 
 
@@ -184,6 +185,7 @@ def test_vol_of_vol_uses_realized_vol_20(synth_fetcher):
         synth_fetcher._matrix["vol_of_vol_20"].values,
         expected.values,
         equal_nan=True,
+        rtol=1e-5,  # float32 derived fields have ~7 digits of precision
     )
 
 

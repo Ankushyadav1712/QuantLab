@@ -182,7 +182,11 @@ def _build_per_field_matrix(
       3. Pre-history values stay NaN — we don't back-fill into time the
          data didn't exist.
     """
-    out = pd.DataFrame(np.nan, index=daily_index, columns=tickers)
+    out = pd.DataFrame(
+        np.full((len(daily_index), len(tickers)), np.nan, dtype=np.float32),
+        index=daily_index,
+        columns=tickers,
+    )
     lag_days = pd.Timedelta(days=90 * lag_quarters)
     for ticker, series in series_by_ticker.items():
         if ticker not in tickers or series is None or series.empty:

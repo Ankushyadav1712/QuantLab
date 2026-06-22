@@ -1102,6 +1102,9 @@ async def lifespan(_app: FastAPI):
             _state["spy_returns"] = spy_returns
             _state["ff5"] = ff5
             _state["data"] = {field: fetcher.get_data_matrix(field) for field in ALL_FIELDS}
+            # Free the duplicate dict — _state["data"] now owns all matrices
+            fetcher._matrix.clear()
+            spy_fetcher = None  # free SPY fetcher memory  # noqa: F841
 
             close_mat = _state["data"].get("close")
             if close_mat is not None and not close_mat.empty:
@@ -1115,7 +1118,9 @@ async def lifespan(_app: FastAPI):
                 ticker_list = list(close_mat.columns)
                 for name, series in macro_result.items():
                     try:
-                        _state["data"][name] = macro_broadcast(series, close_mat.index, ticker_list)
+                        _state["data"][name] = macro_broadcast(
+                            series, close_mat.index, ticker_list
+                        ).astype(np.float32)
                         macro_present.append(name)
                     except Exception as exc:
                         warnings.warn(f"[macro:{name}] broadcast failed: {exc}")
@@ -1131,7 +1136,7 @@ async def lifespan(_app: FastAPI):
                         close_matrix=close_mat,
                     )
                     for name, matrix in fund_matrices.items():
-                        _state["data"][name] = matrix
+                        _state["data"][name] = matrix.astype(np.float32)
                         fundamentals_present.append(name)
                 except Exception as exc:
                     warnings.warn(f"[fundamentals] load failed: {exc}; skipping")
@@ -1155,7 +1160,7 @@ async def lifespan(_app: FastAPI):
                 extra={
                     "environment": ENVIRONMENT,
                     "n_fields": len(_state["data"]),
-                    "n_tickers": len(fetcher._frames) if hasattr(fetcher, "_frames") else 0,
+                    "n_tickers": len(fetcher._loaded_tickers),
                     "n_universes": len(list_universes()),
                     "ff5_present": bool(ff5 is not None and not ff5.empty),
                     "fundamentals_available": _state.get("fundamentals_available", False),
@@ -1360,7 +1365,9 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
                 existing = _state["data"].get(name)
                 if existing is not None and not existing.empty:
                     series = existing.iloc[:, 0]
-                    _state["data"][name] = macro_broadcast(series, close_mat.index, new_cols)
+                    _state["data"][name] = macro_broadcast(
+                        series, close_mat.index, new_cols
+                    ).astype(np.float32)
         live = [t for t in tickers if t not in failed]
         if not live:
             raise HTTPException(
@@ -2493,23 +2500,24 @@ def data_preview(ticker: str):
         )
     fetcher: DataFetcher = _state["fetcher"]
 
-    # Start with the per-ticker frame (the 7 base fields).
-    base = fetcher._frames.get(ticker)
-    if base is None:
-        path = fetcher._cache_path(ticker)
-        if path.exists():
-            try:
-                base = pd.read_parquet(path)
-            except Exception:
-                base = None
+    # Read the per-ticker frame from the parquet cache (the 7 base fields).
+    # _frames is cleared after startup to save memory, so always read from disk.
+    base = None
+    path = fetcher._cache_path(ticker)
+    if path.exists():
+        try:
+            base = pd.read_parquet(path)
+        except Exception:
+            base = None
     if base is None or base.empty:
         raise HTTPException(status_code=404, detail=f"No cached data for {ticker}")
 
     # Pull this ticker's column out of every derived (dates × tickers) matrix
-    # and join it onto the per-ticker frame, so the preview shows all 32 fields.
+    # and join it onto the per-ticker frame, so the preview shows all fields.
+    # Use _state["data"] since fetcher._matrix is cleared after startup.
     columns = {f["name"]: base[f["name"]] for f in FIELDS if f["name"] in base.columns}
-    for field, matrix in fetcher._matrix.items():
-        if field in columns or matrix is None or matrix.empty:
+    for field, matrix in _state["data"].items():
+        if field in columns or matrix is None or not hasattr(matrix, "empty") or matrix.empty:
             continue
         if ticker in matrix.columns:
             columns[field] = matrix[ticker]
