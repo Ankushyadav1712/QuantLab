@@ -1065,46 +1065,37 @@ async def lifespan(_app: FastAPI):
 
     def load_data_sync():
         try:
-            from concurrent.futures import ThreadPoolExecutor
+            import gc
 
             log.info("lifespan: background data download starting")
             fetcher = _state["fetcher"]
             pool = sorted(universe_all_tickers())
 
-            # ---- Phase 1: parallel independent downloads ----
-            # Universe, SPY, FF5, and macro are independent of each other.
-            # Run them concurrently to reduce wall-clock time from
-            # sum(all) to max(all).
-            spy_fetcher = DataFetcher()
+            # ---- Phase 1a: Universe download (heaviest) ----
+            # Run sequentially instead of parallel threads to avoid 4x peak
+            # memory.  On Render's 512 MB free tier the extra ~30s startup
+            # time is worth the ~100 MB lower peak RSS.
+            fetcher.download_universe(tickers=pool)
 
-            def _dl_universe():
-                fetcher.download_universe(tickers=pool)
-
-            def _dl_spy():
-                return spy_fetcher.download_universe(tickers=["SPY"], compute_derived=False)
-
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                fut_universe = executor.submit(_dl_universe)
-                fut_spy = executor.submit(_dl_spy)
-                fut_ff5 = executor.submit(download_ff5_daily)
-                fut_macro = executor.submit(download_macro)
-
-                # Wait for all four to complete
-                fut_universe.result()
-                spy_frames = fut_spy.result()
-                ff5 = fut_ff5.result()
-                macro_result = fut_macro.result()
-
-            spy_returns = (
-                spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
-            )
-
-            _state["spy_returns"] = spy_returns
-            _state["ff5"] = ff5
             _state["data"] = {field: fetcher.get_data_matrix(field) for field in ALL_FIELDS}
             # Free the duplicate dict — _state["data"] now owns all matrices
             fetcher._matrix.clear()
-            spy_fetcher = None  # free SPY fetcher memory  # noqa: F841
+            gc.collect()
+
+            # ---- Phase 1b: SPY (tiny — 1 ticker, no derived) ----
+            spy_fetcher = DataFetcher()
+            spy_frames = spy_fetcher.download_universe(tickers=["SPY"], compute_derived=False)
+            spy_returns = (
+                spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
+            )
+            _state["spy_returns"] = spy_returns
+            del spy_fetcher, spy_frames  # free immediately
+            gc.collect()
+
+            # ---- Phase 1c: FF5 + macro (small HTTP fetches) ----
+            _state["ff5"] = download_ff5_daily()
+            macro_result = download_macro()
+            gc.collect()
 
             close_mat = _state["data"].get("close")
             if close_mat is not None and not close_mat.empty:
@@ -1120,11 +1111,13 @@ async def lifespan(_app: FastAPI):
                     try:
                         _state["data"][name] = macro_broadcast(
                             series, close_mat.index, ticker_list
-                        ).astype(np.float32)
+                        )
                         macro_present.append(name)
                     except Exception as exc:
                         warnings.warn(f"[macro:{name}] broadcast failed: {exc}")
             _state["macro_present"] = macro_present
+            del macro_result  # free raw series dict
+            gc.collect()
 
             # ---- Phase 3: fundamentals (depends on close_mat) ----
             fundamentals_present: list[str] = []
@@ -1138,9 +1131,11 @@ async def lifespan(_app: FastAPI):
                     for name, matrix in fund_matrices.items():
                         _state["data"][name] = matrix.astype(np.float32)
                         fundamentals_present.append(name)
+                    del fund_matrices  # free intermediate dict
                 except Exception as exc:
                     warnings.warn(f"[fundamentals] load failed: {exc}; skipping")
             _state["fundamentals_present"] = fundamentals_present
+            gc.collect()
 
             fundamentals_available = False
             fundamentals_coverage_pct = 0.0
@@ -1155,6 +1150,7 @@ async def lifespan(_app: FastAPI):
 
             # Update the ready state flag
             _state["ready"] = True
+            ff5 = _state.get("ff5")
             log.info(
                 "lifespan: ready (background data load complete)",
                 extra={
@@ -1367,7 +1363,7 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
                     series = existing.iloc[:, 0]
                     _state["data"][name] = macro_broadcast(
                         series, close_mat.index, new_cols
-                    ).astype(np.float32)
+                    )
         live = [t for t in tickers if t not in failed]
         if not live:
             raise HTTPException(

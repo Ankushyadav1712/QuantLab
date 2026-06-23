@@ -119,11 +119,13 @@ def test_momentum_definitions_match_close_ratios(synth_fetcher):
         synth_fetcher._matrix["momentum_60"].values,
         (c / c.shift(60) - 1.0).values,
         equal_nan=True,
+        rtol=1e-5,  # momentum stored as float32; close is float64
     )
     np.testing.assert_allclose(
         synth_fetcher._matrix["momentum_252"].values,
         (c / c.shift(252) - 1.0).values,
         equal_nan=True,
+        rtol=1e-5,
     )
 
 
