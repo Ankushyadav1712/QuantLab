@@ -199,10 +199,12 @@ def broadcast_to_matrix(
     Forward-fills across missing trading days (FRED holidays often differ
     from US equity market holidays).  Values before the series' first
     observation stay NaN — operators treat that as "data not yet available".
+
+    Returns a float32 DataFrame to minimise memory on constrained hosts.
     """
     aligned = series.reindex(dates).ffill()
-    return pd.DataFrame(
-        np.broadcast_to(aligned.values[:, None], (len(dates), len(tickers))),
-        index=dates,
-        columns=tickers,
-    )
+    col = aligned.values.astype(np.float32)
+    # np.tile produces a writable, contiguous array (unlike np.broadcast_to
+    # which returns a read-only view that pandas later copies anyway).
+    tiled = np.tile(col[:, None], (1, len(tickers)))
+    return pd.DataFrame(tiled, index=dates, columns=tickers)

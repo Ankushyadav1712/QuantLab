@@ -309,6 +309,8 @@ def download_fundamentals(
     fetcher.  Tickers that fail fetch contribute NaN columns to every field
     (no exception raised).
     """
+    import gc
+
     fetch_fn = fetch_fn or _yfinance_fetch
 
     # Per-field accumulator: {field: {ticker: Series}}
@@ -340,6 +342,12 @@ def download_fundamentals(
             # capex is reported negative in yfinance; FCF = OCF + capex
             raw_collected["free_cash_flow"][ticker] = ocf_a + capex_a
 
+        # Free yfinance frames immediately — we only keep the extracted Series
+        del income, balance, cashflow
+
+    # Reclaim memory from yfinance objects before materializing matrices
+    gc.collect()
+
     # Materialize each raw field as a (daily × tickers) DataFrame
     raw_matrices: dict[str, pd.DataFrame] = {}
     for field in RAW_FUNDAMENTAL_FIELDS:
@@ -349,6 +357,10 @@ def download_fundamentals(
             tickers,
             lag_quarters=lag_quarters,
         )
+
+    # raw_collected no longer needed — free the per-ticker Series
+    del raw_collected
+    gc.collect()
 
     # Compute ratios (need close matrix; aligned to the same daily index)
     aligned_close = close_matrix.reindex(index=daily_index, columns=tickers)

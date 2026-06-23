@@ -314,16 +314,19 @@ class DataFetcher:
         ):
             return
 
+        # Use float32 copies for derived computation to halve intermediate
+        # memory.  The actual close/returns in _matrix stay float64 for the
+        # backtester's cumulative-product precision.
         o = self._matrix["open"]
         h = self._matrix["high"]
         l = self._matrix["low"]
-        c = self._matrix["close"]
+        c = self._matrix["close"].astype(np.float32)
         v = self._matrix["volume"]
-        r = self._matrix["returns"]
+        r = self._matrix["returns"].astype(np.float32)
         idx, cols = c.index, c.columns
 
-        def df_from_array(arr: np.ndarray) -> pd.DataFrame:
-            out = pd.DataFrame(arr, index=idx, columns=cols)
+        def df32(arr: np.ndarray) -> pd.DataFrame:
+            out = pd.DataFrame(arr.astype(np.float32), index=idx, columns=cols)
             out.columns.name = "ticker"
             return out
 
@@ -332,11 +335,11 @@ class DataFetcher:
         self._matrix["weighted_close"] = (h + l + 2.0 * c) / 4.0
         self._matrix["range_"] = h - l
         self._matrix["body"] = (c - o).abs()
-        # element-wise max/min of (open, close) — go via .values to dodge MultiIndex pitfalls
-        oc_max = df_from_array(np.maximum(o.values, c.values))
-        oc_min = df_from_array(np.minimum(o.values, c.values))
+        oc_max = df32(np.maximum(o.values, c.values))
+        oc_min = df32(np.minimum(o.values, c.values))
         self._matrix["upper_shadow"] = h - oc_max
         self._matrix["lower_shadow"] = oc_min - l
+        del oc_max, oc_min  # free intermediates
         self._matrix["gap"] = o - c.shift(1)
 
         # ----- return variants -----
@@ -354,13 +357,16 @@ class DataFetcher:
         self._matrix["adv20"] = adv20
         self._matrix["volume_ratio"] = v / adv20.replace(0, np.nan)
         self._matrix["amihud"] = r.abs() / dv.replace(0, np.nan)
+        del adv20  # free intermediate
 
         # ----- volatility & risk -----
         hl = h - l
         hc = (h - prev_close).abs()
         lc = (l - prev_close).abs()
         tr_arr = np.maximum(np.maximum(hl.values, hc.values), lc.values)
-        true_range = df_from_array(tr_arr)
+        del hc, lc  # free intermediates
+        true_range = df32(tr_arr)
+        del tr_arr
         self._matrix["true_range"] = true_range
         self._matrix["atr"] = true_range.rolling(14).mean()
         self._matrix["realized_vol"] = r.rolling(20).std()
