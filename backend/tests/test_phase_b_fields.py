@@ -114,7 +114,7 @@ def test_derived_fields_tuple_includes_new_fields():
 
 
 def test_momentum_definitions_match_close_ratios(synth_fetcher):
-    c = synth_fetcher._matrix["close"]
+    c = synth_fetcher._matrix["close"].astype(np.float32)
     np.testing.assert_allclose(
         synth_fetcher._matrix["momentum_60"].values,
         (c / c.shift(60) - 1.0).values,
@@ -144,7 +144,7 @@ def test_reversal_is_negative_of_momentum(synth_fetcher):
 
 def test_momentum_z_60_is_momentum_over_vol(synth_fetcher):
     """momentum_z_60 = momentum_60 / 60-day return-vol."""
-    r = synth_fetcher._matrix["returns"]
+    r = synth_fetcher._matrix["returns"].astype(np.float32)
     expected = synth_fetcher._matrix["momentum_60"] / r.rolling(60).std().replace(0, np.nan)
     np.testing.assert_allclose(
         synth_fetcher._matrix["momentum_z_60"].values,
