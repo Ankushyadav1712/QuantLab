@@ -1109,9 +1109,7 @@ async def lifespan(_app: FastAPI):
                 ticker_list = list(close_mat.columns)
                 for name, series in macro_result.items():
                     try:
-                        _state["data"][name] = macro_broadcast(
-                            series, close_mat.index, ticker_list
-                        )
+                        _state["data"][name] = macro_broadcast(series, close_mat.index, ticker_list)
                         macro_present.append(name)
                     except Exception as exc:
                         warnings.warn(f"[macro:{name}] broadcast failed: {exc}")
@@ -1361,9 +1359,7 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
                 existing = _state["data"].get(name)
                 if existing is not None and not existing.empty:
                     series = existing.iloc[:, 0]
-                    _state["data"][name] = macro_broadcast(
-                        series, close_mat.index, new_cols
-                    )
+                    _state["data"][name] = macro_broadcast(series, close_mat.index, new_cols)
         live = [t for t in tickers if t not in failed]
         if not live:
             raise HTTPException(
