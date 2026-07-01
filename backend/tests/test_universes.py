@@ -3,7 +3,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-
 from data.universes import (
     GICS_LEVELS,
     all_tickers,
@@ -14,7 +13,6 @@ from data.universes import (
     list_universes,
 )
 from engine.backtester import Backtester, SimulationConfig
-
 
 # ---------- Registry ----------
 
@@ -106,10 +104,30 @@ def four_sector_data():
 @pytest.fixture
 def four_sector_gics():
     return {
-        "A": {"sector": "Tech", "industry_group": "Software", "industry": "App SW", "sub_industry": "App SW"},
-        "B": {"sector": "Tech", "industry_group": "Software", "industry": "App SW", "sub_industry": "App SW"},
-        "C": {"sector": "Energy", "industry_group": "Oil", "industry": "E&P", "sub_industry": "E&P"},
-        "D": {"sector": "Energy", "industry_group": "Oil", "industry": "E&P", "sub_industry": "E&P"},
+        "A": {
+            "sector": "Tech",
+            "industry_group": "Software",
+            "industry": "App SW",
+            "sub_industry": "App SW",
+        },
+        "B": {
+            "sector": "Tech",
+            "industry_group": "Software",
+            "industry": "App SW",
+            "sub_industry": "App SW",
+        },
+        "C": {
+            "sector": "Energy",
+            "industry_group": "Oil",
+            "industry": "E&P",
+            "sub_industry": "E&P",
+        },
+        "D": {
+            "sector": "Energy",
+            "industry_group": "Oil",
+            "industry": "E&P",
+            "sub_industry": "E&P",
+        },
     }
 
 

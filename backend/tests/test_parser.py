@@ -1,5 +1,4 @@
 import pytest
-
 from engine.parser import (
     BinaryOp,
     DataField,
@@ -113,11 +112,11 @@ def test_parse_decimal_literal():
         "1.2.3",
         "rank(close,)",
         "* close",
-        "",                       # empty string
-        "   ",                    # whitespace only
-        "rank(close",             # missing closing paren
-        "ts_mean(close, 20",      # missing closing paren (multi-arg)
-        "((close)",               # unbalanced extra paren
+        "",  # empty string
+        "   ",  # whitespace only
+        "rank(close",  # missing closing paren
+        "ts_mean(close, 20",  # missing closing paren (multi-arg)
+        "((close)",  # unbalanced extra paren
     ],
 )
 def test_invalid_syntax_raises(expr):

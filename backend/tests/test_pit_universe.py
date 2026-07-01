@@ -3,7 +3,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-
 from data.sp100_history import (
     SP100_INCLUSION_DATES,
     build_membership_mask,
