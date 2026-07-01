@@ -43,6 +43,7 @@ class DataFetcher:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._frames: dict[str, pd.DataFrame] = {}
         self._matrix: dict[str, pd.DataFrame] = {}
+        self._loaded_tickers: set[str] = set()
 
     # ---------- paths / cache ----------
 
@@ -108,18 +109,26 @@ class DataFetcher:
                     continue
                 except Exception as exc:
                     warnings.warn(f"[{ticker}] cache read failed ({exc}); re-downloading")
+            need_download.append(ticker)
 
-            df = self._download_one(ticker, start, end)
-            if df is None:
-                continue
-            try:
-                df.to_parquet(path)
-            except Exception as exc:
-                warnings.warn(f"[{ticker}] cache write failed: {exc}")
-            result[ticker] = df
+        # Batch-download all cache misses in one HTTP call
+        if need_download:
+            batch_result = self._download_batch(need_download, start, end)
+            for ticker, df in batch_result.items():
+                try:
+                    df.to_parquet(self._cache_path(ticker))
+                except Exception as exc:
+                    warnings.warn(f"[{ticker}] cache write failed: {exc}")
+                result[ticker] = df
 
         self._frames = result
+        self._loading_progress["status"] = "computing"
+        self._loading_progress["phase"] = "building derived matrices"
         self._build_matrices(compute_derived=compute_derived)
+        # Track which tickers were loaded, then free per-ticker frames
+        # to save memory — all data now lives in self._matrix.
+        self._loaded_tickers = set(result.keys())
+        self._frames.clear()
         return result
 
     # ---------- matrix construction ----------
@@ -255,6 +264,14 @@ class DataFetcher:
 
     # ---------- lazy expansion (custom universes) ----------
 
+    # ---------- loading progress ----------
+
+    def get_progress(self) -> dict:
+        """Return a snapshot of the current loading state."""
+        return dict(self._loading_progress)
+
+    # ---------- lazy expansion (custom universes) ----------
+
     def ensure_tickers(
         self,
         tickers: Iterable[str],
@@ -275,7 +292,11 @@ class DataFetcher:
         if not missing:
             return []
 
-        failed: list[str] = []
+        self._loading_progress["status"] = "downloading"
+        self._loading_progress["phase"] = f"fetching {len(missing)} new tickers"
+
+        # Split: load from parquet cache vs download from yfinance
+        need_download: list[str] = []
         for t in missing:
             path = self._cache_path(t)
             if self._is_cache_fresh(path):
@@ -293,11 +314,29 @@ class DataFetcher:
             except Exception:
                 pass
             self._frames[t] = df
+            self._loaded_tickers.add(t)
+
+        failed = [t for t in missing if t not in self._loaded_tickers]
+
+        # Reload ALL previously-loaded tickers from parquet so the rebuilt
+        # matrices are complete (not just the newly added ones).  The per-ticker
+        # frames were cleared after the initial download_universe() call to save
+        # memory, so we re-read them here before _build_matrices().
+        for t in list(self._loaded_tickers):
+            if t not in self._frames:
+                path = self._cache_path(t)
+                if path.exists():
+                    try:
+                        self._frames[t] = pd.read_parquet(path)
+                    except Exception:
+                        pass
+
+        self._loading_progress["status"] = "computing"
+        self._loading_progress["phase"] = "rebuilding derived matrices"
 
         # Derived caches were keyed by the prior column set — recompute now.
-        # Skip the per-field on-disk caches; they were stale the moment we
-        # added a new ticker, and rewriting them on every custom-universe
-        # request would just churn the cache for no benefit.
         self._matrix.clear()
         self._build_matrices(compute_derived=True)
+        # Free per-ticker frames again after rebuild
+        self._frames.clear()
         return failed
