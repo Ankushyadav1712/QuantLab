@@ -124,6 +124,12 @@ class DataFetcher:
         self._frames: dict[str, pd.DataFrame] = {}
         self._matrix: dict[str, pd.DataFrame] = {}
         self._loaded_tickers: set[str] = set()
+        self._loading_progress: dict = {
+            "status": "idle",
+            "phase": "",
+            "downloaded": 0,
+            "total": 0,
+        }
 
     # ---------- paths / cache ----------
 
@@ -276,6 +282,8 @@ class DataFetcher:
                 result[ticker] = df
 
         self._frames = result
+        self._loading_progress["status"] = "computing"
+        self._loading_progress["phase"] = "building derived matrices"
         self._build_matrices(compute_derived=compute_derived)
         # Track which tickers were loaded, then free per-ticker frames
         # to save memory — all data now lives in self._matrix.
@@ -319,7 +327,7 @@ class DataFetcher:
         # backtester's cumulative-product precision.
         o = self._matrix["open"]
         h = self._matrix["high"]
-        l = self._matrix["low"]
+        lo = self._matrix["low"]
         c = self._matrix["close"].astype(np.float32)
         v = self._matrix["volume"]
         r = self._matrix["returns"].astype(np.float32)
@@ -331,14 +339,14 @@ class DataFetcher:
             return out
 
         # ----- price structure -----
-        self._matrix["median_price"] = (h + l) / 2.0
-        self._matrix["weighted_close"] = (h + l + 2.0 * c) / 4.0
-        self._matrix["range_"] = h - l
+        self._matrix["median_price"] = (h + lo) / 2.0
+        self._matrix["weighted_close"] = (h + lo + 2.0 * c) / 4.0
+        self._matrix["range_"] = h - lo
         self._matrix["body"] = (c - o).abs()
         oc_max = df32(np.maximum(o.values, c.values))
         oc_min = df32(np.minimum(o.values, c.values))
         self._matrix["upper_shadow"] = h - oc_max
-        self._matrix["lower_shadow"] = oc_min - l
+        self._matrix["lower_shadow"] = oc_min - lo
         del oc_max, oc_min  # free intermediates
         self._matrix["gap"] = o - c.shift(1)
 
@@ -360,9 +368,9 @@ class DataFetcher:
         del adv20  # free intermediate
 
         # ----- volatility & risk -----
-        hl = h - l
+        hl = h - lo
         hc = (h - prev_close).abs()
-        lc = (l - prev_close).abs()
+        lc = (lo - prev_close).abs()
         tr_arr = np.maximum(np.maximum(hl.values, hc.values), lc.values)
         del hc, lc  # free intermediates
         true_range = df32(tr_arr)
@@ -377,7 +385,7 @@ class DataFetcher:
         self._matrix["momentum_5"] = c / c.shift(5) - 1.0
         self._matrix["momentum_20"] = c / c.shift(20) - 1.0
         self._matrix["close_to_high_252"] = c / c.rolling(252).max()
-        self._matrix["high_low_ratio"] = h / l
+        self._matrix["high_low_ratio"] = h / lo
 
         # ----- Phase B: extended momentum (8) -----
         # Different lookback windows + risk-adjusted variants.  Researchers
@@ -407,7 +415,7 @@ class DataFetcher:
         # Parkinson estimator: high-low range based vol.  More efficient than
         # close-to-close because it uses intraday extremes.
         # σ_P^2 = (1/(4·ln(2))) · (ln(H/L))^2  →  rolling-mean for stability.
-        ln_hl_sq = (np.log(h / l)) ** 2
+        ln_hl_sq = (np.log(h / lo)) ** 2
         self._matrix["parkinson_vol"] = np.sqrt(ln_hl_sq.rolling(20).mean() / (4.0 * np.log(2.0)))
         # Garman-Klass: combines OHLC for the most efficient single-day estimate.
         # σ_GK^2 = 0.5·(ln(H/L))^2 - (2·ln(2) - 1)·(ln(C/O))^2
@@ -455,7 +463,7 @@ class DataFetcher:
         ln_hl_yest = ln_hl_sq.shift(-1)  # next day's (ln H/L)^2
         beta = ln_hl_today + ln_hl_yest
         h_2d = pd.concat([h, h.shift(-1)]).groupby(level=0).max()
-        l_2d = pd.concat([l, l.shift(-1)]).groupby(level=0).min()
+        l_2d = pd.concat([lo, lo.shift(-1)]).groupby(level=0).min()
         gamma = (np.log(h_2d / l_2d)) ** 2
         denom = 3.0 - 2.0 * np.sqrt(2.0)
         # sqrt(2β) - sqrt(β) on its own is well-defined for β >= 0
@@ -541,6 +549,14 @@ class DataFetcher:
 
     # ---------- lazy expansion (custom universes) ----------
 
+    # ---------- loading progress ----------
+
+    def get_progress(self) -> dict:
+        """Return a snapshot of the current loading state."""
+        return dict(self._loading_progress)
+
+    # ---------- lazy expansion (custom universes) ----------
+
     def ensure_tickers(
         self,
         tickers: Iterable[str],
@@ -561,6 +577,10 @@ class DataFetcher:
         if not missing:
             return []
 
+        self._loading_progress["status"] = "downloading"
+        self._loading_progress["phase"] = f"fetching {len(missing)} new tickers"
+
+        # Split: load from parquet cache vs download from yfinance
         failed: list[str] = []
         for t in missing:
             path = self._cache_path(t)
@@ -583,9 +603,6 @@ class DataFetcher:
             self._loaded_tickers.add(t)
 
         # Derived caches were keyed by the prior column set — recompute now.
-        # Skip the per-field on-disk caches; they were stale the moment we
-        # added a new ticker, and rewriting them on every custom-universe
-        # request would just churn the cache for no benefit.
         self._matrix.clear()
         self._build_matrices(compute_derived=True)
         # Free per-ticker frames again after rebuild
