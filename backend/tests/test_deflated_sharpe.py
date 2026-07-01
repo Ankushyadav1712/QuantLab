@@ -35,9 +35,7 @@ def test_norm_ppf_out_of_range_returns_nan():
 
 def test_deflated_sharpe_n_trials_one_collapses_threshold_to_zero():
     """With one trial there's no selection bias — threshold is exactly 0."""
-    out = deflated_sharpe(
-        sharpe_annual=1.0, n_trials=1, n_obs=500, skew=0.0, kurt=3.0
-    )
+    out = deflated_sharpe(sharpe_annual=1.0, n_trials=1, n_obs=500, skew=0.0, kurt=3.0)
     assert out is not None
     assert out["sharpe_threshold_annualized"] == pytest.approx(0.0, abs=1e-9)
     # Deflated == headline when threshold is zero

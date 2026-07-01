@@ -17,11 +17,11 @@ def _synth_ff5(n: int = 250, seed: int = 0) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "Mkt-RF": rng.normal(0.0005, 0.01, n),
-            "SMB":    rng.normal(0.0,    0.005, n),
-            "HML":    rng.normal(0.0,    0.005, n),
-            "RMW":    rng.normal(0.0,    0.004, n),
-            "CMA":    rng.normal(0.0,    0.004, n),
-            "RF":     np.full(n, 0.00005),
+            "SMB": rng.normal(0.0, 0.005, n),
+            "HML": rng.normal(0.0, 0.005, n),
+            "RMW": rng.normal(0.0, 0.004, n),
+            "CMA": rng.normal(0.0, 0.004, n),
+            "RF": np.full(n, 0.00005),
         },
         index=dates,
     )
@@ -40,7 +40,7 @@ def test_recovers_known_loadings():
         + 0.3 * ff5["SMB"]
         + daily_alpha
         + rng.normal(0.0, 0.001, len(ff5))  # tiny noise
-        + ff5["RF"]                          # gross-of-RF
+        + ff5["RF"]  # gross-of-RF
     )
 
     out = FactorDecomposition().compute(
@@ -56,9 +56,7 @@ def test_recovers_known_loadings():
     for k in ("value", "profitability", "investment"):
         assert abs(out["loadings"][k]["beta"]) < 0.1
 
-    assert out["alpha_annualized"] == pytest_approx(
-        daily_alpha * 252, rel=0.20
-    )
+    assert out["alpha_annualized"] == pytest_approx(daily_alpha * 252, rel=0.20)
     assert out["r_squared"] > 0.8  # most variance explained by Mkt + SMB
 
 
@@ -104,4 +102,5 @@ def test_pure_market_beta_alpha_near_zero():
 # A tiny shim so we don't have to import pytest at module top to use approx
 def pytest_approx(value, rel=None, abs=None):
     import pytest
+
     return pytest.approx(value, rel=rel, abs=abs)

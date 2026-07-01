@@ -127,7 +127,7 @@ def op_sign(x):
 
 
 def power(x, n):
-    return x ** n
+    return x**n
 
 
 def _binary_elementwise(x, y, fn):

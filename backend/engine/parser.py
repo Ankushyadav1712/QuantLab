@@ -6,19 +6,43 @@ from typing import Any, Union
 
 DATA_FIELDS = {
     # Original (7)
-    "open", "high", "low", "close", "volume", "returns", "vwap",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "returns",
+    "vwap",
     # Price structure (7)
-    "median_price", "weighted_close", "range_", "body",
-    "upper_shadow", "lower_shadow", "gap",
+    "median_price",
+    "weighted_close",
+    "range_",
+    "body",
+    "upper_shadow",
+    "lower_shadow",
+    "gap",
     # Return variants (5)
-    "log_returns", "abs_returns", "intraday_return",
-    "overnight_return", "signed_volume",
+    "log_returns",
+    "abs_returns",
+    "intraday_return",
+    "overnight_return",
+    "signed_volume",
     # Volume & liquidity (4)
-    "dollar_volume", "adv20", "volume_ratio", "amihud",
+    "dollar_volume",
+    "adv20",
+    "volume_ratio",
+    "amihud",
     # Volatility & risk (5)
-    "true_range", "atr", "realized_vol", "skewness", "kurtosis",
+    "true_range",
+    "atr",
+    "realized_vol",
+    "skewness",
+    "kurtosis",
     # Momentum & relative (4)
-    "momentum_5", "momentum_20", "close_to_high_252", "high_low_ratio",
+    "momentum_5",
+    "momentum_20",
+    "close_to_high_252",
+    "high_low_ratio",
 }
 
 # User-facing aliases that resolve to a canonical field name.  `range` is the
@@ -128,7 +152,9 @@ class Tokenizer:
             try:
                 value = float(num_text) if seen_dot else int(num_text)
             except ValueError as exc:
-                raise ValueError(f"Invalid number '{num_text}' at position {start}") from exc
+                raise ValueError(
+                    f"Invalid number '{num_text}' at position {start}"
+                ) from exc
             return Token(TokenType.NUMBER, value)
 
         if ch.isalpha() or ch == "_":
@@ -172,9 +198,7 @@ class Parser:
     def _consume(self, expected: TokenType | None = None) -> Token:
         tok = self.tokens[self.pos]
         if expected is not None and tok.type is not expected:
-            raise ValueError(
-                f"Expected {expected.name}, got {tok.type.name}"
-            )
+            raise ValueError(f"Expected {expected.name}, got {tok.type.name}")
         self.pos += 1
         return tok
 
@@ -236,9 +260,7 @@ class Parser:
                 f"expected '(' for function call"
             )
 
-        raise ValueError(
-            f"Unexpected token {tok.type.name} at position {self.pos}"
-        )
+        raise ValueError(f"Unexpected token {tok.type.name} at position {self.pos}")
 
     def parse_args(self) -> list[ASTNode]:
         args: list[ASTNode] = []

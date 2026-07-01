@@ -13,17 +13,17 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from analytics.performance import PerformanceAnalytics
-from config import (
+from analytics.performance import PerformanceAnalytics  # noqa: E402
+from config import (  # noqa: E402
     DATA_END,
     DATA_START,
     DEFAULT_BOOKSIZE,
     SECTOR_MAP,
     UNIVERSE,
 )
-from data.fetcher import DataFetcher
-from engine.backtester import Backtester, SimulationConfig
-from engine.evaluator import AlphaEvaluator
+from data.fetcher import DataFetcher  # noqa: E402
+from engine.backtester import Backtester, SimulationConfig  # noqa: E402
+from engine.evaluator import AlphaEvaluator  # noqa: E402
 
 
 EXPRESSIONS = [
@@ -53,8 +53,7 @@ def main() -> int:
     analytics = PerformanceAnalytics()
 
     header = (
-        f"{'Expression':<46} "
-        f"{'Sharpe':>8} {'AnnRet':>8} {'MaxDD':>8} {'Fitness':>8}"
+        f"{'Expression':<46} {'Sharpe':>8} {'AnnRet':>8} {'MaxDD':>8} {'Fitness':>8}"
     )
     print(header)
     print("-" * len(header))

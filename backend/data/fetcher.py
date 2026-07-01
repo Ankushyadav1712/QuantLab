@@ -15,23 +15,47 @@ CACHE_TTL_SECONDS = 24 * 60 * 60
 
 # 7 fields stored per-ticker in {ticker}.parquet
 BASE_FIELDS: tuple[str, ...] = (
-    "open", "high", "low", "close", "volume", "returns", "vwap",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "returns",
+    "vwap",
 )
 
 # 25 fields computed from base matrices, cached at {field}.parquet
 DERIVED_FIELDS: tuple[str, ...] = (
     # price structure
-    "median_price", "weighted_close", "range_", "body",
-    "upper_shadow", "lower_shadow", "gap",
+    "median_price",
+    "weighted_close",
+    "range_",
+    "body",
+    "upper_shadow",
+    "lower_shadow",
+    "gap",
     # return variants
-    "log_returns", "abs_returns", "intraday_return",
-    "overnight_return", "signed_volume",
+    "log_returns",
+    "abs_returns",
+    "intraday_return",
+    "overnight_return",
+    "signed_volume",
     # volume & liquidity
-    "dollar_volume", "adv20", "volume_ratio", "amihud",
+    "dollar_volume",
+    "adv20",
+    "volume_ratio",
+    "amihud",
     # volatility & risk
-    "true_range", "atr", "realized_vol", "skewness", "kurtosis",
+    "true_range",
+    "atr",
+    "realized_vol",
+    "skewness",
+    "kurtosis",
     # momentum & relative
-    "momentum_5", "momentum_20", "close_to_high_252", "high_low_ratio",
+    "momentum_5",
+    "momentum_20",
+    "close_to_high_252",
+    "high_low_ratio",
 )
 
 ALL_FIELDS: tuple[str, ...] = BASE_FIELDS + DERIVED_FIELDS  # 32 total
@@ -44,6 +68,12 @@ class DataFetcher:
         self._frames: dict[str, pd.DataFrame] = {}
         self._matrix: dict[str, pd.DataFrame] = {}
         self._loaded_tickers: set[str] = set()
+        self._loading_progress: dict = {
+            "status": "idle",
+            "phase": "",
+            "downloaded": 0,
+            "total": 0,
+        }
 
     # ---------- paths / cache ----------
 
@@ -65,7 +95,9 @@ class DataFetcher:
             df = df.copy()
             df.columns = df.columns.get_level_values(0)
         df = df.rename(columns=str.lower)
-        keep = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+        keep = [
+            c for c in ["open", "high", "low", "close", "volume"] if c in df.columns
+        ]
         df = df[keep].copy()
         df.index = pd.to_datetime(df.index).tz_localize(None)
         df.index.name = "date"
@@ -100,6 +132,7 @@ class DataFetcher:
         compute_derived: bool = True,
     ) -> dict[str, pd.DataFrame]:
         result: dict[str, pd.DataFrame] = {}
+        need_download: list[str] = []
         for ticker in tickers:
             path = self._cache_path(ticker)
             if self._is_cache_fresh(path):
@@ -108,7 +141,9 @@ class DataFetcher:
                     result[ticker] = df
                     continue
                 except Exception as exc:
-                    warnings.warn(f"[{ticker}] cache read failed ({exc}); re-downloading")
+                    warnings.warn(
+                        f"[{ticker}] cache read failed ({exc}); re-downloading"
+                    )
             need_download.append(ticker)
 
         # Batch-download all cache misses in one HTTP call
@@ -155,12 +190,15 @@ class DataFetcher:
         # Try cache first
         if self._load_derived_caches():
             return
-        if not all(f in self._matrix for f in ("open", "high", "low", "close", "volume", "returns")):
+        if not all(
+            f in self._matrix
+            for f in ("open", "high", "low", "close", "volume", "returns")
+        ):
             return
 
         o = self._matrix["open"]
         h = self._matrix["high"]
-        l = self._matrix["low"]
+        lo = self._matrix["low"]
         c = self._matrix["close"]
         v = self._matrix["volume"]
         r = self._matrix["returns"]
@@ -172,15 +210,15 @@ class DataFetcher:
             return out
 
         # ----- price structure -----
-        self._matrix["median_price"] = (h + l) / 2.0
-        self._matrix["weighted_close"] = (h + l + 2.0 * c) / 4.0
-        self._matrix["range_"] = h - l
+        self._matrix["median_price"] = (h + lo) / 2.0
+        self._matrix["weighted_close"] = (h + lo + 2.0 * c) / 4.0
+        self._matrix["range_"] = h - lo
         self._matrix["body"] = (c - o).abs()
         # element-wise max/min of (open, close) — go via .values to dodge MultiIndex pitfalls
         oc_max = df_from_array(np.maximum(o.values, c.values))
         oc_min = df_from_array(np.minimum(o.values, c.values))
         self._matrix["upper_shadow"] = h - oc_max
-        self._matrix["lower_shadow"] = oc_min - l
+        self._matrix["lower_shadow"] = oc_min - lo
         self._matrix["gap"] = o - c.shift(1)
 
         # ----- return variants -----
@@ -200,9 +238,9 @@ class DataFetcher:
         self._matrix["amihud"] = r.abs() / dv.replace(0, np.nan)
 
         # ----- volatility & risk -----
-        hl = h - l
+        hl = h - lo
         hc = (h - prev_close).abs()
-        lc = (l - prev_close).abs()
+        lc = (lo - prev_close).abs()
         tr_arr = np.maximum(np.maximum(hl.values, hc.values), lc.values)
         true_range = df_from_array(tr_arr)
         self._matrix["true_range"] = true_range
@@ -215,7 +253,7 @@ class DataFetcher:
         self._matrix["momentum_5"] = c / c.shift(5) - 1.0
         self._matrix["momentum_20"] = c / c.shift(20) - 1.0
         self._matrix["close_to_high_252"] = c / c.rolling(252).max()
-        self._matrix["high_low_ratio"] = h / l
+        self._matrix["high_low_ratio"] = h / lo
 
         self._save_derived_caches()
 
@@ -296,7 +334,6 @@ class DataFetcher:
         self._loading_progress["phase"] = f"fetching {len(missing)} new tickers"
 
         # Split: load from parquet cache vs download from yfinance
-        need_download: list[str] = []
         for t in missing:
             path = self._cache_path(t)
             if self._is_cache_fresh(path):
@@ -307,7 +344,6 @@ class DataFetcher:
                     pass
             df = self._download_one(t, start, end)
             if df is None:
-                failed.append(t)
                 continue
             try:
                 df.to_parquet(path)

@@ -9,13 +9,14 @@ from typing import Any
 import hmac
 import logging
 import os
+import warnings
 
 import numpy as np
 import pandas as pd
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
@@ -57,29 +58,77 @@ from models.schemas import (
 
 
 OPERATORS = [
-    {"name": "ts_mean", "args": "(x, d)", "description": "Rolling mean of x over d periods"},
-    {"name": "ts_std", "args": "(x, d)", "description": "Rolling stdev of x over d periods"},
+    {
+        "name": "ts_mean",
+        "args": "(x, d)",
+        "description": "Rolling mean of x over d periods",
+    },
+    {
+        "name": "ts_std",
+        "args": "(x, d)",
+        "description": "Rolling stdev of x over d periods",
+    },
     {"name": "ts_min", "args": "(x, d)", "description": "Rolling min over d periods"},
     {"name": "ts_max", "args": "(x, d)", "description": "Rolling max over d periods"},
     {"name": "ts_sum", "args": "(x, d)", "description": "Rolling sum over d periods"},
-    {"name": "ts_rank", "args": "(x, d)", "description": "Rolling percentile rank in [0,1] over d periods"},
+    {
+        "name": "ts_rank",
+        "args": "(x, d)",
+        "description": "Rolling percentile rank in [0,1] over d periods",
+    },
     {"name": "delta", "args": "(x, d)", "description": "x - x.shift(d)"},
     {"name": "delay", "args": "(x, d)", "description": "x.shift(d)"},
-    {"name": "decay_linear", "args": "(x, d)", "description": "Linearly weighted MA over d periods"},
-    {"name": "ts_corr", "args": "(x, y, d)", "description": "Rolling Pearson correlation over d periods"},
-    {"name": "ts_cov", "args": "(x, y, d)", "description": "Rolling covariance over d periods"},
-    {"name": "rank", "args": "(x)", "description": "Cross-sectional percentile rank in [0,1] per date"},
-    {"name": "zscore", "args": "(x)", "description": "Cross-sectional z-score per date"},
-    {"name": "demean", "args": "(x)", "description": "Subtract cross-sectional mean per date"},
+    {
+        "name": "decay_linear",
+        "args": "(x, d)",
+        "description": "Linearly weighted MA over d periods",
+    },
+    {
+        "name": "ts_corr",
+        "args": "(x, y, d)",
+        "description": "Rolling Pearson correlation over d periods",
+    },
+    {
+        "name": "ts_cov",
+        "args": "(x, y, d)",
+        "description": "Rolling covariance over d periods",
+    },
+    {
+        "name": "rank",
+        "args": "(x)",
+        "description": "Cross-sectional percentile rank in [0,1] per date",
+    },
+    {
+        "name": "zscore",
+        "args": "(x)",
+        "description": "Cross-sectional z-score per date",
+    },
+    {
+        "name": "demean",
+        "args": "(x)",
+        "description": "Subtract cross-sectional mean per date",
+    },
     {"name": "scale", "args": "(x)", "description": "Scale so |sum|=1 per date"},
-    {"name": "normalize", "args": "(x)", "description": "Demean then scale to unit |sum|"},
+    {
+        "name": "normalize",
+        "args": "(x)",
+        "description": "Demean then scale to unit |sum|",
+    },
     {"name": "abs", "args": "(x)", "description": "Element-wise absolute value"},
-    {"name": "log", "args": "(x)", "description": "Element-wise natural log (NaN for x<=0)"},
+    {
+        "name": "log",
+        "args": "(x)",
+        "description": "Element-wise natural log (NaN for x<=0)",
+    },
     {"name": "sign", "args": "(x)", "description": "Element-wise sign (-1, 0, +1)"},
     {"name": "power", "args": "(x, n)", "description": "x ** n element-wise"},
     {"name": "max", "args": "(x, y)", "description": "Element-wise max"},
     {"name": "min", "args": "(x, y)", "description": "Element-wise min"},
-    {"name": "if_else", "args": "(cond, x, y)", "description": "Element-wise conditional"},
+    {
+        "name": "if_else",
+        "args": "(cond, x, y)",
+        "description": "Element-wise conditional",
+    },
 ]
 
 # Rich field metadata: every entry is {name, category, description}.  Returned
@@ -91,38 +140,146 @@ FIELDS: list[dict[str, str]] = [
     {"name": "low", "category": "price", "description": "Daily low price"},
     {"name": "close", "category": "price", "description": "Closing price"},
     {"name": "volume", "category": "price", "description": "Daily share volume"},
-    {"name": "returns", "category": "price", "description": "Daily simple return (close.pct_change)"},
-    {"name": "vwap", "category": "price", "description": "Typical price (high + low + close) / 3"},
+    {
+        "name": "returns",
+        "category": "price",
+        "description": "Daily simple return (close.pct_change)",
+    },
+    {
+        "name": "vwap",
+        "category": "price",
+        "description": "Typical price (high + low + close) / 3",
+    },
     # ----- price structure (7) -----
-    {"name": "median_price", "category": "price_structure", "description": "Average of high and low; cleaner price estimate than close"},
-    {"name": "weighted_close", "category": "price_structure", "description": "Close-weighted typical price; smoother than simple average"},
-    {"name": "range_", "category": "price_structure", "description": "High minus low; daily volatility proxy (alias: range)"},
-    {"name": "body", "category": "price_structure", "description": "Absolute candle body size; small body indicates indecision"},
-    {"name": "upper_shadow", "category": "price_structure", "description": "Rejection of higher prices; potential bearish signal"},
-    {"name": "lower_shadow", "category": "price_structure", "description": "Rejection of lower prices; potential bullish signal"},
-    {"name": "gap", "category": "price_structure", "description": "Overnight price gap; captures after-hours sentiment"},
+    {
+        "name": "median_price",
+        "category": "price_structure",
+        "description": "Average of high and low; cleaner price estimate than close",
+    },
+    {
+        "name": "weighted_close",
+        "category": "price_structure",
+        "description": "Close-weighted typical price; smoother than simple average",
+    },
+    {
+        "name": "range_",
+        "category": "price_structure",
+        "description": "High minus low; daily volatility proxy (alias: range)",
+    },
+    {
+        "name": "body",
+        "category": "price_structure",
+        "description": "Absolute candle body size; small body indicates indecision",
+    },
+    {
+        "name": "upper_shadow",
+        "category": "price_structure",
+        "description": "Rejection of higher prices; potential bearish signal",
+    },
+    {
+        "name": "lower_shadow",
+        "category": "price_structure",
+        "description": "Rejection of lower prices; potential bullish signal",
+    },
+    {
+        "name": "gap",
+        "category": "price_structure",
+        "description": "Overnight price gap; captures after-hours sentiment",
+    },
     # ----- return variants (5) -----
-    {"name": "log_returns", "category": "return_variants", "description": "Log of price ratio; symmetric and better for compounding"},
-    {"name": "abs_returns", "category": "return_variants", "description": "Absolute daily return; volatility proxy"},
-    {"name": "intraday_return", "category": "return_variants", "description": "Close minus open over open; pure intraday momentum"},
-    {"name": "overnight_return", "category": "return_variants", "description": "Open minus prior close; captures news/earnings reaction"},
-    {"name": "signed_volume", "category": "return_variants", "description": "Volume signed by return direction; money flow proxy"},
+    {
+        "name": "log_returns",
+        "category": "return_variants",
+        "description": "Log of price ratio; symmetric and better for compounding",
+    },
+    {
+        "name": "abs_returns",
+        "category": "return_variants",
+        "description": "Absolute daily return; volatility proxy",
+    },
+    {
+        "name": "intraday_return",
+        "category": "return_variants",
+        "description": "Close minus open over open; pure intraday momentum",
+    },
+    {
+        "name": "overnight_return",
+        "category": "return_variants",
+        "description": "Open minus prior close; captures news/earnings reaction",
+    },
+    {
+        "name": "signed_volume",
+        "category": "return_variants",
+        "description": "Volume signed by return direction; money flow proxy",
+    },
     # ----- volume & liquidity (4) -----
-    {"name": "dollar_volume", "category": "volume_liquidity", "description": "Price times volume; true liquidity measure"},
-    {"name": "adv20", "category": "volume_liquidity", "description": "20-day average daily volume; liquidity baseline"},
-    {"name": "volume_ratio", "category": "volume_liquidity", "description": "Volume divided by adv20; values above 1 indicate unusual activity"},
-    {"name": "amihud", "category": "volume_liquidity", "description": "Absolute return over dollar volume; Amihud illiquidity ratio"},
+    {
+        "name": "dollar_volume",
+        "category": "volume_liquidity",
+        "description": "Price times volume; true liquidity measure",
+    },
+    {
+        "name": "adv20",
+        "category": "volume_liquidity",
+        "description": "20-day average daily volume; liquidity baseline",
+    },
+    {
+        "name": "volume_ratio",
+        "category": "volume_liquidity",
+        "description": "Volume divided by adv20; values above 1 indicate unusual activity",
+    },
+    {
+        "name": "amihud",
+        "category": "volume_liquidity",
+        "description": "Absolute return over dollar volume; Amihud illiquidity ratio",
+    },
     # ----- volatility & risk (5) -----
-    {"name": "true_range", "category": "volatility_risk", "description": "Volatility accounting for gaps; better than simple high-low range"},
-    {"name": "atr", "category": "volatility_risk", "description": "14-day average true range; standard volatility measure"},
-    {"name": "realized_vol", "category": "volatility_risk", "description": "20-day rolling return standard deviation"},
-    {"name": "skewness", "category": "volatility_risk", "description": "60-day rolling return skewness; negative values indicate crash risk"},
-    {"name": "kurtosis", "category": "volatility_risk", "description": "60-day rolling return kurtosis; high values indicate fat tails"},
+    {
+        "name": "true_range",
+        "category": "volatility_risk",
+        "description": "Volatility accounting for gaps; better than simple high-low range",
+    },
+    {
+        "name": "atr",
+        "category": "volatility_risk",
+        "description": "14-day average true range; standard volatility measure",
+    },
+    {
+        "name": "realized_vol",
+        "category": "volatility_risk",
+        "description": "20-day rolling return standard deviation",
+    },
+    {
+        "name": "skewness",
+        "category": "volatility_risk",
+        "description": "60-day rolling return skewness; negative values indicate crash risk",
+    },
+    {
+        "name": "kurtosis",
+        "category": "volatility_risk",
+        "description": "60-day rolling return kurtosis; high values indicate fat tails",
+    },
     # ----- momentum & relative (4) -----
-    {"name": "momentum_5", "category": "momentum_relative", "description": "5-day price momentum"},
-    {"name": "momentum_20", "category": "momentum_relative", "description": "20-day price momentum"},
-    {"name": "close_to_high_252", "category": "momentum_relative", "description": "Ratio of close to 52-week high; distance from recent peak"},
-    {"name": "high_low_ratio", "category": "momentum_relative", "description": "High over low; intraday volatility as a ratio"},
+    {
+        "name": "momentum_5",
+        "category": "momentum_relative",
+        "description": "5-day price momentum",
+    },
+    {
+        "name": "momentum_20",
+        "category": "momentum_relative",
+        "description": "20-day price momentum",
+    },
+    {
+        "name": "close_to_high_252",
+        "category": "momentum_relative",
+        "description": "Ratio of close to 52-week high; distance from recent peak",
+    },
+    {
+        "name": "high_low_ratio",
+        "category": "momentum_relative",
+        "description": "High over low; intraday volatility as a ratio",
+    },
 ]
 
 # Plain-name list for callers that only want field names.
@@ -148,9 +305,7 @@ async def lifespan(_app: FastAPI):
     fetcher.download_universe(tickers=pool)
 
     spy_fetcher = DataFetcher()
-    spy_frames = spy_fetcher.download_universe(
-        tickers=["SPY"], compute_derived=False
-    )
+    spy_frames = spy_fetcher.download_universe(tickers=["SPY"], compute_derived=False)
     spy_returns = (
         spy_frames["SPY"]["returns"] if "SPY" in spy_frames else pd.Series(dtype=float)
     )
@@ -200,6 +355,7 @@ async def _rate_limit_handler(_request: Request, exc: RateLimitExceeded):
         content={"detail": f"Rate limit exceeded: {exc.detail}"},
     )
 
+
 # Dev keeps "*" so a browser can hit the API from any localhost variant or
 # from a LAN box; production tightens to the configured allow-list.
 _cors_origins = ["*"] if ENVIRONMENT != "production" else ALLOWED_ORIGINS
@@ -233,11 +389,29 @@ class _JsonFormatter(logging.Formatter):
             if key in payload or key.startswith("_"):
                 continue
             if key in (
-                "args", "asctime", "created", "exc_info", "exc_text",
-                "filename", "funcName", "levelname", "levelno", "lineno",
-                "module", "msecs", "message", "msg", "name", "pathname",
-                "process", "processName", "relativeCreated", "stack_info",
-                "thread", "threadName", "taskName",
+                "args",
+                "asctime",
+                "created",
+                "exc_info",
+                "exc_text",
+                "filename",
+                "funcName",
+                "levelname",
+                "levelno",
+                "lineno",
+                "module",
+                "msecs",
+                "message",
+                "msg",
+                "name",
+                "pathname",
+                "process",
+                "processName",
+                "relativeCreated",
+                "stack_info",
+                "thread",
+                "threadName",
+                "taskName",
             ):
                 continue
             try:
@@ -302,7 +476,9 @@ def require_api_token(authorization: str | None = Header(default=None)) -> None:
 # ---------- Helpers ----------
 
 
-def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, str | None]], str]:
+def _resolve_universe(
+    settings: dict,
+) -> tuple[list[str], dict[str, dict[str, str | None]], str]:
     """Pick the ticker list + GICS map from request settings.
 
     Resolution priority:
@@ -324,7 +500,9 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
         fetcher: DataFetcher = _state["fetcher"]
         failed = fetcher.ensure_tickers(tickers)
         # Refresh the matrices snapshot the rest of the request reads from
-        _state["data"] = {field: fetcher.get_data_matrix(field) for field in DATA_FIELDS}
+        _state["data"] = {
+            field: fetcher.get_data_matrix(field) for field in DATA_FIELDS
+        }
         live = [t for t in tickers if t not in failed]
         if not live:
             raise HTTPException(
@@ -348,23 +526,15 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
     # like the custom-universe path does.
     _preset_fetcher = _state.get("fetcher")
     if _preset_fetcher is not None:
-        _preset_missing = [t for t in u["tickers"] if t not in _preset_fetcher._loaded_tickers]
+        _preset_missing = [
+            t for t in u["tickers"] if t not in _preset_fetcher._loaded_tickers
+        ]
         if _preset_missing:
             _preset_failed = _preset_fetcher.ensure_tickers(_preset_missing)
             # Refresh the data snapshot so evaluator sees the new tickers.
             _state["data"] = {
                 field: _preset_fetcher.get_data_matrix(field) for field in ALL_FIELDS
             }
-            close_mat = _state["data"].get("close")
-            if close_mat is not None and not close_mat.empty:
-                new_cols = list(close_mat.columns)
-                date_idx = pd.DatetimeIndex(close_mat.index)
-                _state["gics_data"] = gics_data_frames(date_idx, new_cols)
-                for name in _state.get("macro_present", []):
-                    existing = _state["data"].get(name)
-                    if existing is not None and not existing.empty:
-                        series = existing.iloc[:, 0]
-                        _state["data"][name] = macro_broadcast(series, date_idx, new_cols)
             if _preset_failed:
                 warnings.warn(
                     f"[universe:{uid}] {len(_preset_failed)} tickers failed to load: "
@@ -375,9 +545,7 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
     return u["tickers"], u["gics"], uid
 
 
-def _make_config(
-    settings: dict | None, *, run_oos: bool = True
-) -> SimulationConfig:
+def _make_config(settings: dict | None, *, run_oos: bool = True) -> SimulationConfig:
     s = settings or {}
     tickers, _, _ = _resolve_universe(s)
     return SimulationConfig(
@@ -440,9 +608,18 @@ def _evaluate(expression: str) -> pd.DataFrame:
 
 
 _METRIC_KEYS = (
-    "sharpe", "annual_return", "annual_vol", "max_drawdown",
-    "calmar_ratio", "sortino_ratio", "avg_turnover", "fitness",
-    "win_rate", "profit_factor", "beta", "information_ratio",
+    "sharpe",
+    "annual_return",
+    "annual_vol",
+    "max_drawdown",
+    "calmar_ratio",
+    "sortino_ratio",
+    "avg_turnover",
+    "fitness",
+    "win_rate",
+    "profit_factor",
+    "beta",
+    "information_ratio",
 )
 
 
@@ -551,7 +728,9 @@ def _build_response(
         "monthly_returns": monthly_returns,
         "expression": expression,
         "settings": settings_out,
-        "data_quality": _data_quality(cfg, alpha_matrix, universe_id=universe_id, gics_map=gics_map),
+        "data_quality": _data_quality(
+            cfg, alpha_matrix, universe_id=universe_id, gics_map=gics_map
+        ),
     }
 
 
@@ -569,7 +748,9 @@ def _data_quality(
         "ticker_count": len(cfg.universe),
     }
     if gics_map is not None:
-        universe_block["available_neutralizations"] = available_neutralizations(gics_map)
+        universe_block["available_neutralizations"] = available_neutralizations(
+            gics_map
+        )
         unknown = [t for t, row in gics_map.items() if not row.get("sector")]
         universe_block["tickers_without_gics"] = unknown
     notes = [
@@ -648,9 +829,11 @@ def loading_status():
         loaded_tickers – How many tickers are currently in the data pool.
     """
     fetcher: DataFetcher | None = _state.get("fetcher")
-    progress = fetcher.get_progress() if fetcher else {
-        "status": "initializing", "phase": "", "downloaded": 0, "total": 0
-    }
+    progress = (
+        fetcher.get_progress()
+        if fetcher
+        else {"status": "initializing", "phase": "", "downloaded": 0, "total": 0}
+    )
     total = int(progress.get("total") or 0)
     downloaded = int(progress.get("downloaded") or 0)
     pct = round(100 * downloaded / total) if total > 0 else 0
@@ -681,13 +864,6 @@ def get_universes():
     """
     out = []
     for u in list_universes():
-<<<<<<< Updated upstream
-        full = get_universe(u["id"])
-        out.append({
-            **u,
-            "available_neutralizations": available_neutralizations(full["gics"]),
-        })
-=======
         if u.get("preload", True):
             # Preloaded universes: GICS is already in memory, safe to call.
             full = get_universe(u["id"])
@@ -696,9 +872,15 @@ def get_universes():
             # Lazy universes (sp500, russell1000): don't trigger a network
             # fetch just to build the dropdown — allow all modes and resolve
             # actual availability at simulate time.
-            neutralizations = ["none", "market", "sector", "industry_group", "industry", "sub_industry"]
+            neutralizations = [
+                "none",
+                "market",
+                "sector",
+                "industry_group",
+                "industry",
+                "sub_industry",
+            ]
         out.append({**u, "available_neutralizations": neutralizations})
->>>>>>> Stashed changes
     return {"universes": out, "default": default_universe_id()}
 
 
@@ -805,11 +987,15 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
     for w, item in zip(weights, req.alphas):
         expr = item.get("expression")
         if not expr:
-            raise HTTPException(status_code=400, detail="Each alpha needs an 'expression'")
+            raise HTTPException(
+                status_code=400, detail="Each alpha needs an 'expression'"
+            )
         matrix = _evaluate(expr)
         items.append({"expression": expr, "weight": float(w)})
         weighted = matrix * float(w)
-        combined = weighted if combined is None else combined.add(weighted, fill_value=0.0)
+        combined = (
+            weighted if combined is None else combined.add(weighted, fill_value=0.0)
+        )
 
     cfg = _make_config(req.settings)
     _, gics_map, universe_id = _resolve_universe(req.settings or {})
@@ -969,7 +1155,7 @@ async def alphas_correlations(req: CorrelationRequest):
             rets += list(oos_ts["daily_returns"])
         if not dates or not rets:
             continue
-        label = (r["name"] or f"alpha_{r['id']}")
+        label = r["name"] or f"alpha_{r['id']}"
         # If duplicate names, disambiguate by id
         if label in series:
             label = f"{label}#{r['id']}"

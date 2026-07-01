@@ -74,8 +74,18 @@ def test_available_neutralizations_full_universe_has_all_levels():
 def test_available_neutralizations_strips_levels_with_one_group():
     # Force a one-sector universe → only sector with 1 group → not usable
     fake_gics = {
-        "AAPL": {"sector": "Tech", "industry_group": "X", "industry": "Y", "sub_industry": "Z"},
-        "MSFT": {"sector": "Tech", "industry_group": "X", "industry": "Y", "sub_industry": "Z"},
+        "AAPL": {
+            "sector": "Tech",
+            "industry_group": "X",
+            "industry": "Y",
+            "sub_industry": "Z",
+        },
+        "MSFT": {
+            "sector": "Tech",
+            "industry_group": "X",
+            "industry": "Y",
+            "sub_industry": "Z",
+        },
     }
     modes = available_neutralizations(fake_gics)
     assert modes == ["none", "market"]
@@ -106,15 +116,39 @@ def four_sector_data():
 @pytest.fixture
 def four_sector_gics():
     return {
-        "A": {"sector": "Tech", "industry_group": "Software", "industry": "App SW", "sub_industry": "App SW"},
-        "B": {"sector": "Tech", "industry_group": "Software", "industry": "App SW", "sub_industry": "App SW"},
-        "C": {"sector": "Energy", "industry_group": "Oil", "industry": "E&P", "sub_industry": "E&P"},
-        "D": {"sector": "Energy", "industry_group": "Oil", "industry": "E&P", "sub_industry": "E&P"},
+        "A": {
+            "sector": "Tech",
+            "industry_group": "Software",
+            "industry": "App SW",
+            "sub_industry": "App SW",
+        },
+        "B": {
+            "sector": "Tech",
+            "industry_group": "Software",
+            "industry": "App SW",
+            "sub_industry": "App SW",
+        },
+        "C": {
+            "sector": "Energy",
+            "industry_group": "Oil",
+            "industry": "E&P",
+            "sub_industry": "E&P",
+        },
+        "D": {
+            "sector": "Energy",
+            "industry_group": "Oil",
+            "industry": "E&P",
+            "sub_industry": "E&P",
+        },
     }
 
 
-@pytest.mark.parametrize("mode", ["sector", "industry_group", "industry", "sub_industry"])
-def test_gics_neutralization_demeans_per_group(mode, four_sector_data, four_sector_gics):
+@pytest.mark.parametrize(
+    "mode", ["sector", "industry_group", "industry", "sub_industry"]
+)
+def test_gics_neutralization_demeans_per_group(
+    mode, four_sector_data, four_sector_gics
+):
     """For a constant per-group alpha, GICS-level neutralization must zero
     every weight (within-group demean of a constant is 0)."""
     closes = four_sector_data["close"]
@@ -157,8 +191,18 @@ def test_gics_mode_buckets_unknowns_as_unknown(four_sector_data):
     closes = four_sector_data["close"]
     # Only A and B have GICS; C and D should bucket together as 'Unknown'
     partial_gics = {
-        "A": {"sector": "Tech", "industry_group": "X", "industry": "Y", "sub_industry": "Z"},
-        "B": {"sector": "Tech", "industry_group": "X", "industry": "Y", "sub_industry": "Z"},
+        "A": {
+            "sector": "Tech",
+            "industry_group": "X",
+            "industry": "Y",
+            "sub_industry": "Z",
+        },
+        "B": {
+            "sector": "Tech",
+            "industry_group": "X",
+            "industry": "Y",
+            "sub_industry": "Z",
+        },
     }
     bt = Backtester(four_sector_data, gics_map=partial_gics)
     alpha = pd.DataFrame(1.0, index=closes.index, columns=closes.columns)
