@@ -17,7 +17,11 @@ def _quick_sharpe(daily_returns: list[float]) -> float:
     window — not the full PerformanceAnalytics output.
     """
     arr = np.asarray(
-        [x for x in daily_returns if x is not None and not (isinstance(x, float) and np.isnan(x))],
+        [
+            x
+            for x in daily_returns
+            if x is not None and not (isinstance(x, float) and np.isnan(x))
+        ],
         dtype=float,
     )
     if arr.size < 2:
@@ -110,8 +114,7 @@ class Backtester:
         # keeps the legacy 'sector' code path working without branching.
         if gics_map and not sector_map:
             self.sector_map = {
-                t: row.get("sector") or "Unknown"
-                for t, row in gics_map.items()
+                t: row.get("sector") or "Unknown" for t, row in gics_map.items()
             }
 
     def run(
@@ -126,9 +129,7 @@ class Backtester:
         # 1. Universe + date filter (applies to both halves identically)
         cols = [t for t in config.universe if t in alpha_matrix.columns]
         if not cols:
-            raise ValueError(
-                "No tickers in alpha_matrix match the configured universe"
-            )
+            raise ValueError("No tickers in alpha_matrix match the configured universe")
 
         alpha = alpha_matrix[cols].copy()
         alpha.index = pd.to_datetime(alpha.index)
@@ -146,9 +147,7 @@ class Backtester:
         alpha = alpha.loc[nan_frac <= 0.5]
 
         if alpha.empty:
-            raise ValueError(
-                "All dates dropped: every row had >50% NaN alpha"
-            )
+            raise ValueError("All dates dropped: every row had >50% NaN alpha")
 
         if not config.run_oos:
             return self._run_pipeline(alpha, config), None
@@ -321,20 +320,22 @@ class Backtester:
             train_sharpe = _quick_sharpe(train_res.daily_returns)
             test_sharpe = _quick_sharpe(test_res.daily_returns)
 
-            results.append({
-                "train_start": train_slice.index[0].strftime("%Y-%m-%d"),
-                "train_end": train_slice.index[-1].strftime("%Y-%m-%d"),
-                "test_start": test_slice.index[0].strftime("%Y-%m-%d"),
-                "test_end": test_slice.index[-1].strftime("%Y-%m-%d"),
-                "train_sharpe": train_sharpe,
-                "test_sharpe": test_sharpe,
-                "test_total_return": float(
-                    sum(x for x in test_res.daily_returns if x is not None)
-                ),
-                "test_cumulative_pnl": float(
-                    test_res.cumulative_pnl[-1] if test_res.cumulative_pnl else 0.0
-                ),
-            })
+            results.append(
+                {
+                    "train_start": train_slice.index[0].strftime("%Y-%m-%d"),
+                    "train_end": train_slice.index[-1].strftime("%Y-%m-%d"),
+                    "test_start": test_slice.index[0].strftime("%Y-%m-%d"),
+                    "test_end": test_slice.index[-1].strftime("%Y-%m-%d"),
+                    "train_sharpe": train_sharpe,
+                    "test_sharpe": test_sharpe,
+                    "test_total_return": float(
+                        sum(x for x in test_res.daily_returns if x is not None)
+                    ),
+                    "test_cumulative_pnl": float(
+                        test_res.cumulative_pnl[-1] if test_res.cumulative_pnl else 0.0
+                    ),
+                }
+            )
             cursor += step
 
         return results
@@ -360,6 +361,7 @@ class Backtester:
         absent from the GICS map entirely) are bucketed together as
         ``"Unknown"`` — better than silently dropping them.
         """
+
         # The legacy `sector` path used `sector_map`; the GICS-aware paths use
         # `gics_map`.  When both are present, gics_map wins (it's the strictly
         # richer source).

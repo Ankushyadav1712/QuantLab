@@ -26,7 +26,7 @@ from pathlib import Path
 # Ensure backend/ is on the path so we can import the data modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from data.universes import (
+from data.universes import (  # noqa: E402
     _TICKERS_DIR,
     _GICS_DYNAMIC_CACHE,
     _TICKER_LIST_TTL,
@@ -39,7 +39,11 @@ from data.universes import (
 
 def _refresh_sp500(force: bool = False) -> None:
     path = _TICKERS_DIR / "sp500.txt"
-    if not force and path.exists() and (time.time() - path.stat().st_mtime) < _TICKER_LIST_TTL:
+    if (
+        not force
+        and path.exists()
+        and (time.time() - path.stat().st_mtime) < _TICKER_LIST_TTL
+    ):
         print(f"[sp500] cache is fresh ({path}), skipping (use --force to override)")
         return
 
@@ -57,15 +61,23 @@ def _refresh_sp500(force: bool = False) -> None:
     need_cache = {t: v for t, v in gics_map.items() if t not in _GICS_CATALOG}
     if need_cache:
         _save_gics_dynamic_cache(need_cache)
-        print(f"[sp500] cached GICS for {len(need_cache)} tickers → {_GICS_DYNAMIC_CACHE}")
+        print(
+            f"[sp500] cached GICS for {len(need_cache)} tickers → {_GICS_DYNAMIC_CACHE}"
+        )
     else:
         print("[sp500] all tickers already in static GICS catalog")
 
 
 def _refresh_russell1000(force: bool = False) -> None:
     path = _TICKERS_DIR / "russell1000.txt"
-    if not force and path.exists() and (time.time() - path.stat().st_mtime) < _TICKER_LIST_TTL:
-        print(f"[russell1000] cache is fresh ({path}), skipping (use --force to override)")
+    if (
+        not force
+        and path.exists()
+        and (time.time() - path.stat().st_mtime) < _TICKER_LIST_TTL
+    ):
+        print(
+            f"[russell1000] cache is fresh ({path}), skipping (use --force to override)"
+        )
         return
 
     print("[russell1000] fetching tickers from iShares IWB holdings …")
@@ -83,32 +95,42 @@ def _refresh_russell1000(force: bool = False) -> None:
 
     # Fetch GICS for Russell 1000 stocks not already in sp500 GICS cache or catalog
     from data.universes import _load_gics_dynamic_cache
+
     existing_gics = set(_GICS_CATALOG.keys()) | set(_load_gics_dynamic_cache().keys())
     need_gics = [t for t in tickers if t not in existing_gics]
     if need_gics:
-        print(f"[russell1000] fetching GICS for {len(need_gics)} new tickers via yfinance …")
+        print(
+            f"[russell1000] fetching GICS for {len(need_gics)} new tickers via yfinance …"
+        )
         import yfinance as yf
 
         new_entries: dict[str, list[str]] = {}
         from data.universes import _YF_TO_GICS
+
         batch_size = 50
         for i in range(0, len(need_gics), batch_size):
             batch = need_gics[i : i + batch_size]
             for t in batch:
                 try:
                     info = yf.Ticker(t).info
-                    sector = _YF_TO_GICS.get(info.get("sector", "Unknown") or "Unknown", "Unknown")
+                    sector = _YF_TO_GICS.get(
+                        info.get("sector", "Unknown") or "Unknown", "Unknown"
+                    )
                     industry = info.get("industry", "Unknown") or "Unknown"
                     new_entries[t] = [sector, sector, industry, industry]
                 except Exception:
                     new_entries[t] = ["Unknown", "Unknown", "Unknown", "Unknown"]
             pct = min(100, round(100 * (i + batch_size) / len(need_gics)))
-            print(f"  … {pct}% ({min(i + batch_size, len(need_gics))}/{len(need_gics)})")
+            print(
+                f"  … {pct}% ({min(i + batch_size, len(need_gics))}/{len(need_gics)})"
+            )
             if i + batch_size < len(need_gics):
                 time.sleep(0.5)
 
         _save_gics_dynamic_cache(new_entries)
-        print(f"[russell1000] GICS cache updated ({len(new_entries)} entries) → {_GICS_DYNAMIC_CACHE}")
+        print(
+            f"[russell1000] GICS cache updated ({len(new_entries)} entries) → {_GICS_DYNAMIC_CACHE}"
+        )
     else:
         print("[russell1000] GICS already cached for all tickers")
 

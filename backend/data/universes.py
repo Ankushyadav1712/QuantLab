@@ -34,7 +34,7 @@ from typing import Any
 
 _TICKERS_DIR = Path(__file__).parent / "tickers"
 _GICS_DYNAMIC_CACHE = Path(__file__).parent / "cache" / "gics_dynamic_cache.json"
-_TICKER_LIST_TTL = 30 * 24 * 3600   # 30 days before re-fetching from source
+_TICKER_LIST_TTL = 30 * 24 * 3600  # 30 days before re-fetching from source
 
 # yfinance sector label → GICS sector name
 _YF_TO_GICS: dict[str, str] = {
@@ -122,7 +122,9 @@ def _load_or_fetch_ticker_list(
         if path.exists():
             stale = [ln.strip() for ln in path.read_text().splitlines() if ln.strip()]
             if stale:
-                _warnings.warn(f"[universe:{name}] using stale cache ({len(stale)} tickers)")
+                _warnings.warn(
+                    f"[universe:{name}] using stale cache ({len(stale)} tickers)"
+                )
                 return stale
 
     return []
@@ -186,7 +188,6 @@ def _get_russell1000_tickers() -> list[str]:
     """Return Russell 1000 tickers from the iShares IWB ETF holdings CSV."""
 
     def _fetch() -> list[str]:
-        import io
         import urllib.request
 
         url = (
@@ -218,6 +219,7 @@ def _get_russell1000_tickers() -> list[str]:
         return result
 
     return _load_or_fetch_ticker_list("russell1000", _fetch)
+
 
 # GICS classification.  Values are the post-2023 taxonomy.
 # Format: ticker -> (sector, industry_group, industry, sub_industry)
@@ -856,39 +858,167 @@ _GICS_CATALOG: dict[str, tuple[str, str, str, str]] = {
 
 # The 50-name S&P 100 subset that has been the platform's default since v1.
 _SP100_50 = [
-    "AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V",
-    "UNH", "XOM", "LLY", "JNJ", "WMT", "MA", "PG", "HD", "CVX", "MRK",
-    "ABBV", "AVGO", "COST", "PEP", "KO", "ADBE", "CSCO", "CRM", "ACN", "MCD",
-    "TMO", "ABT", "NFLX", "LIN", "DHR", "TXN", "NKE", "VZ", "AMGN", "PM",
-    "MS", "GS", "RTX", "INTC", "SPGI", "BLK", "MDLZ", "ADP", "GILD", "T",
+    "AAPL",
+    "MSFT",
+    "GOOG",
+    "AMZN",
+    "NVDA",
+    "META",
+    "TSLA",
+    "BRK-B",
+    "JPM",
+    "V",
+    "UNH",
+    "XOM",
+    "LLY",
+    "JNJ",
+    "WMT",
+    "MA",
+    "PG",
+    "HD",
+    "CVX",
+    "MRK",
+    "ABBV",
+    "AVGO",
+    "COST",
+    "PEP",
+    "KO",
+    "ADBE",
+    "CSCO",
+    "CRM",
+    "ACN",
+    "MCD",
+    "TMO",
+    "ABT",
+    "NFLX",
+    "LIN",
+    "DHR",
+    "TXN",
+    "NKE",
+    "VZ",
+    "AMGN",
+    "PM",
+    "MS",
+    "GS",
+    "RTX",
+    "INTC",
+    "SPGI",
+    "BLK",
+    "MDLZ",
+    "ADP",
+    "GILD",
+    "T",
 ]
 
 # Extended S&P 100 — adds 25 of the larger non-50 members.  Not an exhaustive
 # enumeration of all 100 names; that would require curating ~50 more GICS
 # rows for marginal value.  Add more by extending the list + catalog.
-_SP100_EXTENDED = sorted(set(_SP100_50 + [
-    "AMD", "ORCL", "QCOM", "IBM", "INTU", "AMAT", "MU", "ADI", "LRCX", "KLAC",
-    "CMCSA", "DIS", "TMUS", "BKNG", "SBUX", "LOW", "F", "GM",
-    "PFE", "ISRG", "MDT", "BMY", "BAC", "WFC", "C", "AXP", "SCHW",
-    "COP", "OXY", "HON", "BA", "CAT", "GE", "LMT", "UPS", "FDX", "UNP", "MMM",
-    "MO",
-]))
+_SP100_EXTENDED = sorted(
+    set(
+        _SP100_50
+        + [
+            "AMD",
+            "ORCL",
+            "QCOM",
+            "IBM",
+            "INTU",
+            "AMAT",
+            "MU",
+            "ADI",
+            "LRCX",
+            "KLAC",
+            "CMCSA",
+            "DIS",
+            "TMUS",
+            "BKNG",
+            "SBUX",
+            "LOW",
+            "F",
+            "GM",
+            "PFE",
+            "ISRG",
+            "MDT",
+            "BMY",
+            "BAC",
+            "WFC",
+            "C",
+            "AXP",
+            "SCHW",
+            "COP",
+            "OXY",
+            "HON",
+            "BA",
+            "CAT",
+            "GE",
+            "LMT",
+            "UPS",
+            "FDX",
+            "UNP",
+            "MMM",
+            "MO",
+        ]
+    )
+)
 
 # NASDAQ-100 leaning subset — heavily tech/communications, no banks, no oil.
-_NASDAQ100 = sorted({
-    "AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AVGO", "COST",
-    "NFLX", "PEP", "ADBE", "CSCO", "INTC", "AMGN", "GILD", "AMD", "QCOM",
-    "INTU", "AMAT", "MU", "LRCX", "KLAC", "ADI", "MRVL", "PANW", "FTNT",
-    "CDNS", "SNPS", "ASML", "BKNG", "ABNB", "SBUX", "MNST", "ISRG",
-    "REGN", "VRTX", "MDLZ", "PYPL", "TMUS", "CMCSA", "TXN", "ORCL",
-    "PCAR", "NOW",
-})
+_NASDAQ100 = sorted(
+    {
+        "AAPL",
+        "MSFT",
+        "GOOG",
+        "AMZN",
+        "NVDA",
+        "META",
+        "TSLA",
+        "AVGO",
+        "COST",
+        "NFLX",
+        "PEP",
+        "ADBE",
+        "CSCO",
+        "INTC",
+        "AMGN",
+        "GILD",
+        "AMD",
+        "QCOM",
+        "INTU",
+        "AMAT",
+        "MU",
+        "LRCX",
+        "KLAC",
+        "ADI",
+        "MRVL",
+        "PANW",
+        "FTNT",
+        "CDNS",
+        "SNPS",
+        "ASML",
+        "BKNG",
+        "ABNB",
+        "SBUX",
+        "MNST",
+        "ISRG",
+        "REGN",
+        "VRTX",
+        "MDLZ",
+        "PYPL",
+        "TMUS",
+        "CMCSA",
+        "TXN",
+        "ORCL",
+        "PCAR",
+        "NOW",
+    }
+)
 
 # Tech / Comm Services focus — useful for sector-specific cross-sectional alphas.
-_TECH_FOCUS = sorted({
-    t for t, gics in _GICS_CATALOG.items()
-    if gics[0] in ("Information Technology", "Communication Services")
-})
+_TECH_FOCUS = sorted(
+    {
+        t
+        for t, gics in _GICS_CATALOG.items()
+        if gics[0] in ("Information Technology", "Communication Services")
+    }
+)
 
 
 _UNIVERSES: dict[str, dict[str, Any]] = {
@@ -928,7 +1058,7 @@ _UNIVERSES: dict[str, dict[str, Any]] = {
             "Wikipedia on first use and cached for 30 days. Expands the active "
             "data pool on first simulate request (~2–3 min if uncached)."
         ),
-        "tickers": None,          # lazy-loaded via _get_sp500_tickers()
+        "tickers": None,  # lazy-loaded via _get_sp500_tickers()
         "ticker_count_estimate": 503,
         "is_default": False,
         "preload": False,
@@ -940,7 +1070,7 @@ _UNIVERSES: dict[str, dict[str, Any]] = {
             "Ticker list fetched on first use and cached for 30 days. "
             "First simulate request may take 5–10 min if data is uncached."
         ),
-        "tickers": None,          # lazy-loaded via _get_russell1000_tickers()
+        "tickers": None,  # lazy-loaded via _get_russell1000_tickers()
         "ticker_count_estimate": 1000,
         "is_default": False,
         "preload": False,
@@ -994,8 +1124,7 @@ def get_universe(universe_id: str) -> dict[str, Any]:
     """
     if universe_id not in _UNIVERSES:
         raise KeyError(
-            f"Unknown universe {universe_id!r}. "
-            f"Known: {sorted(_UNIVERSES.keys())}"
+            f"Unknown universe {universe_id!r}. Known: {sorted(_UNIVERSES.keys())}"
         )
     u = _UNIVERSES[universe_id]
     tickers = u["tickers"]

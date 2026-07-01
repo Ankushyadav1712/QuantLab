@@ -62,7 +62,7 @@ class FactorDecomposition:
         y_hat = X_aug @ beta
         resid = y - y_hat
 
-        ss_res = float((resid ** 2).sum())
+        ss_res = float((resid**2).sum())
         ss_tot = float(((y - y.mean()) ** 2).sum())
         r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
@@ -108,9 +108,7 @@ class FactorDecomposition:
         # exposure?  Useful one-number summary that complements R².
         explained_by_factors = float((y_hat - alpha_daily).var())
         total_var = float(y.var())
-        factor_share = (
-            explained_by_factors / total_var if total_var > 0 else 0.0
-        )
+        factor_share = explained_by_factors / total_var if total_var > 0 else 0.0
 
         return {
             "alpha_annualized": _safe_float(alpha_annualized),

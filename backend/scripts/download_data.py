@@ -8,12 +8,14 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from config import DATA_END, DATA_START, UNIVERSE
-from data.fetcher import DataFetcher
+from config import DATA_END, DATA_START, UNIVERSE  # noqa: E402
+from data.fetcher import DataFetcher  # noqa: E402
 
 
 def main() -> int:
-    print(f"QuantLab data download — {len(UNIVERSE)} tickers, {DATA_START} → {DATA_END}")
+    print(
+        f"QuantLab data download — {len(UNIVERSE)} tickers, {DATA_START} → {DATA_END}"
+    )
     fetcher = DataFetcher()
 
     successes: list[str] = []
