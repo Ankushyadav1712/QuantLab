@@ -1,5 +1,4 @@
 import pytest
-
 from engine.lint import lint_ast
 from engine.parser import Parser
 

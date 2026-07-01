@@ -9,7 +9,7 @@ services:
     name: quantlab-backend
     runtime: python
     plan: free
-    buildCommand: pip install -r backend/requirements.txt
+    buildCommand: pip install -r backend/requirements.txt && cd backend && python scripts/preseed_cache.py
     # The repo's imports are flat (`from data.fetcher import ...`), so we run
     # uvicorn with --app-dir instead of `backend.main:app` to avoid having
     # to repath every internal import.

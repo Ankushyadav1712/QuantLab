@@ -25,6 +25,10 @@ WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 COPY . .
 
+# Pre-seed the parquet data cache so cold starts don't need network access.
+# Uses production config for shorter DATA_START window.
+RUN ENVIRONMENT=production python scripts/preseed_cache.py
+
 EXPOSE 8000
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -856,39 +856,167 @@ _GICS_CATALOG: dict[str, tuple[str, str, str, str]] = {
 
 # The 50-name S&P 100 subset that has been the platform's default since v1.
 _SP100_50 = [
-    "AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V",
-    "UNH", "XOM", "LLY", "JNJ", "WMT", "MA", "PG", "HD", "CVX", "MRK",
-    "ABBV", "AVGO", "COST", "PEP", "KO", "ADBE", "CSCO", "CRM", "ACN", "MCD",
-    "TMO", "ABT", "NFLX", "LIN", "DHR", "TXN", "NKE", "VZ", "AMGN", "PM",
-    "MS", "GS", "RTX", "INTC", "SPGI", "BLK", "MDLZ", "ADP", "GILD", "T",
+    "AAPL",
+    "MSFT",
+    "GOOG",
+    "AMZN",
+    "NVDA",
+    "META",
+    "TSLA",
+    "BRK-B",
+    "JPM",
+    "V",
+    "UNH",
+    "XOM",
+    "LLY",
+    "JNJ",
+    "WMT",
+    "MA",
+    "PG",
+    "HD",
+    "CVX",
+    "MRK",
+    "ABBV",
+    "AVGO",
+    "COST",
+    "PEP",
+    "KO",
+    "ADBE",
+    "CSCO",
+    "CRM",
+    "ACN",
+    "MCD",
+    "TMO",
+    "ABT",
+    "NFLX",
+    "LIN",
+    "DHR",
+    "TXN",
+    "NKE",
+    "VZ",
+    "AMGN",
+    "PM",
+    "MS",
+    "GS",
+    "RTX",
+    "INTC",
+    "SPGI",
+    "BLK",
+    "MDLZ",
+    "ADP",
+    "GILD",
+    "T",
 ]
 
 # Extended S&P 100 — adds 25 of the larger non-50 members.  Not an exhaustive
 # enumeration of all 100 names; that would require curating ~50 more GICS
 # rows for marginal value.  Add more by extending the list + catalog.
-_SP100_EXTENDED = sorted(set(_SP100_50 + [
-    "AMD", "ORCL", "QCOM", "IBM", "INTU", "AMAT", "MU", "ADI", "LRCX", "KLAC",
-    "CMCSA", "DIS", "TMUS", "BKNG", "SBUX", "LOW", "F", "GM",
-    "PFE", "ISRG", "MDT", "BMY", "BAC", "WFC", "C", "AXP", "SCHW",
-    "COP", "OXY", "HON", "BA", "CAT", "GE", "LMT", "UPS", "FDX", "UNP", "MMM",
-    "MO",
-]))
+_SP100_EXTENDED = sorted(
+    set(
+        _SP100_50
+        + [
+            "AMD",
+            "ORCL",
+            "QCOM",
+            "IBM",
+            "INTU",
+            "AMAT",
+            "MU",
+            "ADI",
+            "LRCX",
+            "KLAC",
+            "CMCSA",
+            "DIS",
+            "TMUS",
+            "BKNG",
+            "SBUX",
+            "LOW",
+            "F",
+            "GM",
+            "PFE",
+            "ISRG",
+            "MDT",
+            "BMY",
+            "BAC",
+            "WFC",
+            "C",
+            "AXP",
+            "SCHW",
+            "COP",
+            "OXY",
+            "HON",
+            "BA",
+            "CAT",
+            "GE",
+            "LMT",
+            "UPS",
+            "FDX",
+            "UNP",
+            "MMM",
+            "MO",
+        ]
+    )
+)
 
 # NASDAQ-100 leaning subset — heavily tech/communications, no banks, no oil.
-_NASDAQ100 = sorted({
-    "AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AVGO", "COST",
-    "NFLX", "PEP", "ADBE", "CSCO", "INTC", "AMGN", "GILD", "AMD", "QCOM",
-    "INTU", "AMAT", "MU", "LRCX", "KLAC", "ADI", "MRVL", "PANW", "FTNT",
-    "CDNS", "SNPS", "ASML", "BKNG", "ABNB", "SBUX", "MNST", "ISRG",
-    "REGN", "VRTX", "MDLZ", "PYPL", "TMUS", "CMCSA", "TXN", "ORCL",
-    "PCAR", "NOW",
-})
+_NASDAQ100 = sorted(
+    {
+        "AAPL",
+        "MSFT",
+        "GOOG",
+        "AMZN",
+        "NVDA",
+        "META",
+        "TSLA",
+        "AVGO",
+        "COST",
+        "NFLX",
+        "PEP",
+        "ADBE",
+        "CSCO",
+        "INTC",
+        "AMGN",
+        "GILD",
+        "AMD",
+        "QCOM",
+        "INTU",
+        "AMAT",
+        "MU",
+        "LRCX",
+        "KLAC",
+        "ADI",
+        "MRVL",
+        "PANW",
+        "FTNT",
+        "CDNS",
+        "SNPS",
+        "ASML",
+        "BKNG",
+        "ABNB",
+        "SBUX",
+        "MNST",
+        "ISRG",
+        "REGN",
+        "VRTX",
+        "MDLZ",
+        "PYPL",
+        "TMUS",
+        "CMCSA",
+        "TXN",
+        "ORCL",
+        "PCAR",
+        "NOW",
+    }
+)
 
 # Tech / Comm Services focus — useful for sector-specific cross-sectional alphas.
-_TECH_FOCUS = sorted({
-    t for t, gics in _GICS_CATALOG.items()
-    if gics[0] in ("Information Technology", "Communication Services")
-})
+_TECH_FOCUS = sorted(
+    {
+        t
+        for t, gics in _GICS_CATALOG.items()
+        if gics[0] in ("Information Technology", "Communication Services")
+    }
+)
 
 
 _UNIVERSES: dict[str, dict[str, Any]] = {
@@ -958,26 +1086,13 @@ def list_universes() -> list[dict[str, Any]]:
     """All built-in universes with metadata for the /api/universes endpoint."""
     out = []
     for uid, u in _UNIVERSES.items():
-        # For lazy universes use the cached file count, or the estimate
-        tickers = u["tickers"]
-        if tickers is None:
-            cache_path = _TICKERS_DIR / f"{uid}.txt"
-            if cache_path.exists():
-                ticker_count = sum(
-                    1 for ln in cache_path.read_text().splitlines() if ln.strip()
-                )
-            else:
-                ticker_count = u.get("ticker_count_estimate", 0)
-        else:
-            ticker_count = len(tickers)
         out.append(
             {
                 "id": uid,
                 "name": u["name"],
                 "description": u["description"],
-                "ticker_count": ticker_count,
+                "ticker_count": len(u["tickers"]),
                 "is_default": u["is_default"],
-                "preload": u.get("preload", True),
             }
         )
     return out
@@ -993,10 +1108,7 @@ def get_universe(universe_id: str) -> dict[str, Any]:
     from the web on first call and cached on disk for 30 days.
     """
     if universe_id not in _UNIVERSES:
-        raise KeyError(
-            f"Unknown universe {universe_id!r}. "
-            f"Known: {sorted(_UNIVERSES.keys())}"
-        )
+        raise KeyError(f"Unknown universe {universe_id!r}. Known: {sorted(_UNIVERSES.keys())}")
     u = _UNIVERSES[universe_id]
     tickers = u["tickers"]
 
@@ -1067,6 +1179,33 @@ def default_universe_id() -> str:
             return uid
     # Fallback if no preset is marked default
     return next(iter(_UNIVERSES))
+
+
+def gics_data_frames(
+    dates,
+    tickers: list[str],
+):
+    """Build (dates × tickers) string DataFrames for each GICS level.
+
+    Used by the evaluator so expressions can reference ``sector``,
+    ``industry_group``, etc. as data fields and feed them into the group_*
+    operators.  Each cell is the ticker's GICS label string (constant across
+    dates per ticker).  Tickers absent from the catalog get NaN, which the
+    group operators treat as "exclude from groupby".
+    """
+    import pandas as _pd  # local import keeps universes.py framework-free at top
+
+    gics = gics_for(tickers)
+    out: dict[str, _pd.DataFrame] = {}
+    for level in GICS_LEVELS:
+        per_ticker = [gics[t].get(level) for t in tickers]
+        # Broadcast the per-ticker label across all dates
+        out[level] = _pd.DataFrame(
+            [per_ticker] * len(dates),
+            index=dates,
+            columns=tickers,
+        )
+    return out
 
 
 def available_neutralizations(

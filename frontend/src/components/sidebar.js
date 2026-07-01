@@ -15,21 +15,29 @@ export function createSidebar(container) {
     </div>
     <div class="sidebar-actions">
       <button type="button" data-role="blend" disabled>Blend Selected</button>
+      <button type="button" data-role="compare" disabled>Compare Selected</button>
       <button type="button" data-role="correlate" disabled>Show Correlations</button>
     </div>
   `;
 
   const listEl = container.querySelector('[data-role="list"]');
   const blendBtn = container.querySelector('[data-role="blend"]');
+  const compareBtn = container.querySelector('[data-role="compare"]');
   const corrBtn = container.querySelector('[data-role="correlate"]');
 
   let alphas = [];
   let selected = new Set();
   let weights = {}; // id -> number
-  const callbacks = { onLoad: null, onDelete: null, onBlend: null, onCorrelate: null };
+  const callbacks = {
+    onLoad: null, onDelete: null, onBlend: null,
+    onCompare: null, onCorrelate: null,
+  };
 
   blendBtn.addEventListener('click', () => {
     if (callbacks.onBlend) callbacks.onBlend(getSelectedItems());
+  });
+  compareBtn.addEventListener('click', () => {
+    if (callbacks.onCompare) callbacks.onCompare(getSelectedItems());
   });
   corrBtn.addEventListener('click', () => {
     if (callbacks.onCorrelate) callbacks.onCorrelate([...selected]);
@@ -38,6 +46,8 @@ export function createSidebar(container) {
   function updateActionState() {
     const n = selected.size;
     blendBtn.disabled = n < 1;
+    // /api/compare requires 2-4 expressions; the button reflects that range
+    compareBtn.disabled = n < 2 || n > 4;
     corrBtn.disabled = n < 2;
   }
 
@@ -90,6 +100,24 @@ export function createSidebar(container) {
     const checked = selected.has(a.id);
     const w = weights[a.id] ?? 1;
 
+    // Provenance badges: short code + data signatures, optional git sha.
+    // Hover for the long story.  None of these are clickable; they're
+    // identity tags so the user can tell whether two saved alphas were
+    // produced under the same code/data state.
+    const provBadges = [];
+    if (a.code_signature) {
+      provBadges.push(`<span class="prov-badge" title="Code signature — hash of backend source files at save time. Different value = backtest logic changed.">c:${escapeHtml(a.code_signature.slice(0, 6))}</span>`);
+    }
+    if (a.data_signature) {
+      provBadges.push(`<span class="prov-badge" title="Data signature — hash of the close-matrix snapshot at save time. Different value = yfinance returned different numbers.">d:${escapeHtml(a.data_signature.slice(0, 6))}</span>`);
+    }
+    if (a.git_hash) {
+      provBadges.push(`<span class="prov-badge" title="Git commit at save time.">g:${escapeHtml(a.git_hash)}</span>`);
+    }
+    const provRow = provBadges.length
+      ? `<div class="alpha-item-prov">${provBadges.join(' ')}</div>`
+      : '';
+
     item.innerHTML = `
       <div class="alpha-item-head">
         <input type="checkbox" data-role="check" ${checked ? 'checked' : ''} />
@@ -97,6 +125,7 @@ export function createSidebar(container) {
         <span class="sharpe-badge ${sharpeCls}">${sharpeStr}</span>
       </div>
       <div class="alpha-item-expr code" title="${escapeHtml(a.expression)}">${escapeHtml(exprText)}</div>
+      ${provRow}
       <div class="alpha-item-row2">
         <label style="font-size:11px; color:var(--text-secondary);">w</label>
         <input type="number" class="alpha-item-weight" step="0.1" value="${w}" data-role="weight" />
@@ -171,6 +200,7 @@ export function createSidebar(container) {
     setOnLoad: (cb) => { callbacks.onLoad = cb; },
     setOnDelete: (cb) => { callbacks.onDelete = cb; },
     setOnBlend: (cb) => { callbacks.onBlend = cb; },
+    setOnCompare: (cb) => { callbacks.onCompare = cb; },
     setOnCorrelate: (cb) => { callbacks.onCorrelate = cb; },
   };
 }

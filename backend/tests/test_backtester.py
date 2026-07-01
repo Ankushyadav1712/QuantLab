@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-
 from engine.backtester import Backtester, BacktestResult, SimulationConfig
 
 
@@ -110,16 +109,12 @@ def test_truncation_caps_fractional_weights(simple_data, sector_map):
     # |w_i| should never exceed 0.1
     assert (result.weights.abs().to_numpy() <= 0.1 + 1e-12).all()
     # corresponding dollar positions never exceed truncation * booksize
-    assert (
-        result.positions.abs().to_numpy() <= cfg.truncation * cfg.booksize + 1e-6
-    ).all()
+    assert (result.positions.abs().to_numpy() <= cfg.truncation * cfg.booksize + 1e-6).all()
 
 
 def test_universe_and_date_filter(simple_data, sector_map):
     closes = simple_data["close"]
-    alpha = pd.DataFrame(
-        np.ones(closes.shape), index=closes.index, columns=closes.columns
-    )
+    alpha = pd.DataFrame(np.ones(closes.shape), index=closes.index, columns=closes.columns)
 
     bt = Backtester(simple_data, sector_map)
     cfg = SimulationConfig(
@@ -168,9 +163,7 @@ def _full_universe_config(data, **overrides):
     return SimulationConfig(**cfg)
 
 
-def test_constant_alpha_zero_weights_after_market_neutralization(
-    synth_data, synth_sector_map
-):
+def test_constant_alpha_zero_weights_after_market_neutralization(synth_data, synth_sector_map):
     closes = synth_data["close"]
     alpha = pd.DataFrame(1.0, index=closes.index, columns=closes.columns)
 
@@ -292,8 +285,18 @@ def test_compare_is_oos_robust_label():
     from analytics.performance import PerformanceAnalytics
 
     perf = PerformanceAnalytics()
-    is_m = {"sharpe": 1.0, "annual_return": 0.10, "start_date": "2020-01-02", "end_date": "2022-12-31"}
-    oos_m = {"sharpe": 0.95, "annual_return": 0.09, "start_date": "2023-01-01", "end_date": "2024-12-31"}
+    is_m = {
+        "sharpe": 1.0,
+        "annual_return": 0.10,
+        "start_date": "2020-01-02",
+        "end_date": "2022-12-31",
+    }
+    oos_m = {
+        "sharpe": 0.95,
+        "annual_return": 0.09,
+        "start_date": "2023-01-01",
+        "end_date": "2024-12-31",
+    }
     out = perf.compare_is_oos(is_m, oos_m)
     assert out["sharpe_decay"] == pytest.approx(0.05, rel=1e-9)
     assert out["overfitting_flag"] is False
@@ -316,7 +319,8 @@ def test_sqrt_impact_charges_more_than_flat(synth_data, synth_sector_map):
     # Provide the fields the impact model needs
     volume = pd.DataFrame(
         1_000_000 + rng.uniform(0, 500_000, closes.shape),
-        index=closes.index, columns=closes.columns,
+        index=closes.index,
+        columns=closes.columns,
     )
     data = {
         "close": closes,
@@ -383,9 +387,7 @@ def test_walk_forward_produces_one_window_per_step(synth_data, synth_sector_map)
 
 def test_walk_forward_returns_empty_when_history_too_short(synth_data, synth_sector_map):
     closes = synth_data["close"]
-    alpha = pd.DataFrame(
-        np.zeros(closes.shape), index=closes.index, columns=closes.columns
-    )
+    alpha = pd.DataFrame(np.zeros(closes.shape), index=closes.index, columns=closes.columns)
     bt = Backtester(synth_data, synth_sector_map)
     cfg = _full_universe_config(
         synth_data,
@@ -442,14 +444,10 @@ def test_execution_lag_two_zeros_first_two_days(synth_data, synth_sector_map):
     )
     bt = Backtester(synth_data, synth_sector_map)
 
-    one, _ = bt.run(
-        alpha, _full_universe_config(synth_data, transaction_cost_bps=0.0)
-    )
+    one, _ = bt.run(alpha, _full_universe_config(synth_data, transaction_cost_bps=0.0))
     two, _ = bt.run(
         alpha,
-        _full_universe_config(
-            synth_data, transaction_cost_bps=0.0, execution_lag_days=2
-        ),
+        _full_universe_config(synth_data, transaction_cost_bps=0.0, execution_lag_days=2),
     )
 
     one_arr = np.asarray(one.daily_pnl, dtype=float)
