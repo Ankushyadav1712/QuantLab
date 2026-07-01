@@ -342,6 +342,36 @@ def _resolve_universe(settings: dict) -> tuple[list[str], dict[str, dict[str, st
         u = get_universe(uid)
     except KeyError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # For large lazy universes (sp500, russell1000) some or all tickers may
+    # not be in the preloaded data pool.  Expand the pool on-demand exactly
+    # like the custom-universe path does.
+    _preset_fetcher = _state.get("fetcher")
+    if _preset_fetcher is not None:
+        _preset_missing = [t for t in u["tickers"] if t not in _preset_fetcher._loaded_tickers]
+        if _preset_missing:
+            _preset_failed = _preset_fetcher.ensure_tickers(_preset_missing)
+            # Refresh the data snapshot so evaluator sees the new tickers.
+            _state["data"] = {
+                field: _preset_fetcher.get_data_matrix(field) for field in ALL_FIELDS
+            }
+            close_mat = _state["data"].get("close")
+            if close_mat is not None and not close_mat.empty:
+                new_cols = list(close_mat.columns)
+                date_idx = pd.DatetimeIndex(close_mat.index)
+                _state["gics_data"] = gics_data_frames(date_idx, new_cols)
+                for name in _state.get("macro_present", []):
+                    existing = _state["data"].get(name)
+                    if existing is not None and not existing.empty:
+                        series = existing.iloc[:, 0]
+                        _state["data"][name] = macro_broadcast(series, date_idx, new_cols)
+            if _preset_failed:
+                warnings.warn(
+                    f"[universe:{uid}] {len(_preset_failed)} tickers failed to load: "
+                    + ", ".join(_preset_failed[:10])
+                    + ("…" if len(_preset_failed) > 10 else "")
+                )
+
     return u["tickers"], u["gics"], uid
 
 
@@ -606,6 +636,31 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/loading_status")
+def loading_status():
+    """Data-loading progress — used by the frontend to show a progress bar
+    while the server is downloading a large universe (sp500, russell1000).
+
+    Returns:
+        ready       – True once the initial preloaded universe is available.
+        progress    – Snapshot from the DataFetcher's internal progress dict.
+                      Fields: status, phase, downloaded, total.
+        loaded_tickers – How many tickers are currently in the data pool.
+    """
+    fetcher: DataFetcher | None = _state.get("fetcher")
+    progress = fetcher.get_progress() if fetcher else {
+        "status": "initializing", "phase": "", "downloaded": 0, "total": 0
+    }
+    total = int(progress.get("total") or 0)
+    downloaded = int(progress.get("downloaded") or 0)
+    pct = round(100 * downloaded / total) if total > 0 else 0
+    return {
+        "ready": bool(_state.get("ready", False)),
+        "progress": {**progress, "pct": pct},
+        "loaded_tickers": len(fetcher._loaded_tickers) if fetcher else 0,
+    }
+
+
 @app.get("/api/universe")
 def get_default_universe():
     """Legacy single-universe endpoint.  Returns the default preset's tickers
@@ -626,11 +681,24 @@ def get_universes():
     """
     out = []
     for u in list_universes():
+<<<<<<< Updated upstream
         full = get_universe(u["id"])
         out.append({
             **u,
             "available_neutralizations": available_neutralizations(full["gics"]),
         })
+=======
+        if u.get("preload", True):
+            # Preloaded universes: GICS is already in memory, safe to call.
+            full = get_universe(u["id"])
+            neutralizations = available_neutralizations(full["gics"])
+        else:
+            # Lazy universes (sp500, russell1000): don't trigger a network
+            # fetch just to build the dropdown — allow all modes and resolve
+            # actual availability at simulate time.
+            neutralizations = ["none", "market", "sector", "industry_group", "industry", "sub_industry"]
+        out.append({**u, "available_neutralizations": neutralizations})
+>>>>>>> Stashed changes
     return {"universes": out, "default": default_universe_id()}
 
 
