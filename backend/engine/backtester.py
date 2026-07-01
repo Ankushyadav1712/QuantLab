@@ -5,9 +5,14 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
-
 from data.sp100_history import build_membership_mask
+
 from engine import operators as ops
+
+# Used to convert annualised borrow rates → daily.  Kept local rather than
+# imported from analytics.performance to avoid a backwards dep (engine
+# shouldn't import from analytics).
+TRADING_DAYS_PER_YEAR = 252
 
 
 def _quick_sharpe(daily_returns: list[float]) -> float:
@@ -17,11 +22,7 @@ def _quick_sharpe(daily_returns: list[float]) -> float:
     window — not the full PerformanceAnalytics output.
     """
     arr = np.asarray(
-        [
-            x
-            for x in daily_returns
-            if x is not None and not (isinstance(x, float) and np.isnan(x))
-        ],
+        [x for x in daily_returns if x is not None and not (isinstance(x, float) and np.isnan(x))],
         dtype=float,
     )
     if arr.size < 2:
@@ -52,12 +53,37 @@ class SimulationConfig:
 
     # Cost model.  `flat` keeps the original `bps × turnover` formula.
     # `sqrt_impact` adds an Almgren-Chriss-style permanent-impact term:
-    #     impact_$_i = impact_coefficient · σ_i · |trade_$_i| · √(participation_i)
-    # where `participation_i = |trade_$_i| / dollar_volume_i` and σ_i is each
-    # stock's realized volatility.  This is the realistic upgrade — flat-bps
-    # under-charges high-turnover, large-trade-relative-to-ADV strategies.
+    #     impact_$_i = impact_coefficient · σ_daily_i · |trade_$_i| · √(participation_i)
+    # where `participation_i = |trade_$_i| / dollar_volume_i` and σ_daily_i is
+    # each stock's daily realized volatility (20-day rolling std of daily
+    # returns — NOT annualised; the impact formula expects daily σ).
+    # This is the realistic upgrade — flat-bps under-charges high-turnover,
+    # large-trade-relative-to-ADV strategies.
     cost_model: Literal["flat", "sqrt_impact"] = "flat"
     impact_coefficient: float = 0.1
+
+    # ----------------------------------------------------------------------
+    # Realistic-cost extensions (PDF Section 9.2 audit, "cost realism" gap)
+    # ----------------------------------------------------------------------
+    # Bid/ask spread cost.  Added on top of `transaction_cost_bps`, so the
+    # latter should be set to 0 if you want spread cost in isolation.
+    #   * "none"            — backwards-compat, no spread charge
+    #   * "flat"            — charge `half_spread_bps` on every trade
+    #   * "corwin_schultz"  — per-day per-ticker spread from the
+    #                          ``corwin_schultz`` derived field (high/low
+    #                          based estimator; varies day-to-day with vol)
+    spread_model: Literal["none", "flat", "corwin_schultz"] = "none"
+    half_spread_bps: float = 2.5  # used only when spread_model="flat"
+
+    # Borrow cost charged daily on the *absolute* value of short positions.
+    # Industry baseline: easy-to-borrow large caps = 25–50 bps/yr, hard-to-
+    # borrow small caps = 200–1000+ bps/yr.  Default 0 = no borrow cost
+    # (backwards compat); pass 50 for the IB-style large-cap baseline.
+    #
+    # Daily charge = |short_$| × borrow_bps_annual / (10_000 × 252).  Persistently
+    # short books bleed Sharpe in proportion to gross short exposure × time —
+    # critical for L/S strategies where shorting was previously free.
+    borrow_cost_bps_annual: float = 0.0
 
     # Walk-forward analysis (rolling train→test windows over the full window).
     # Off by default since it costs ~20× the compute of a single backtest.
@@ -83,6 +109,14 @@ class SimulationConfig:
     # stable; opt in via the editor's settings panel.
     point_in_time_universe: bool = False
 
+    # ADV liquidity filter (PDF Section 9.2).  When > 0, on each date any
+    # ticker whose 20-day average dollar volume is below this threshold is
+    # NaN-ed out of the alpha matrix before sizing — so the backtest can't
+    # claim PnL from stocks it couldn't actually have traded that day.
+    # Brain's US3000 approximation uses ``adv20 > $1M``; pass 1_000_000.0
+    # for parity.  Default 0.0 = no filter (backwards compatible).
+    min_adv_dollars: float = 0.0
+
 
 @dataclass
 class BacktestResult:
@@ -93,6 +127,24 @@ class BacktestResult:
     weights: pd.DataFrame
     turnover: list[float]
     positions: pd.DataFrame
+    # Post-neutralization alpha signal (pre-truncation, pre-scaling).  This is
+    # what IC / alpha-decay metrics correlate against forward returns — the
+    # researcher's *prediction*, before portfolio construction shrinks it.
+    # Optional so older saved results / tests that build a BacktestResult by
+    # hand don't break.
+    signal_matrix: pd.DataFrame | None = None
+    # Per-stock daily returns aligned to the same (date × ticker) grid.  Used
+    # by IC computation; stored here to avoid leaking the global data dict
+    # into analytics modules.
+    forward_returns: pd.DataFrame | None = None
+    # Per-component daily cost streams in dollars, summed across stocks.
+    # Lets ``performance.compute()`` build a cost_breakdown showing the
+    # researcher which cost source is biting (flat / spread / impact /
+    # borrow).  Optional: tests + older saved results may not populate it.
+    #
+    # Schema (every value is a per-day list aligned to ``dates``):
+    #   {"flat": [...], "spread": [...], "impact": [...], "borrow": [...]}
+    cost_components: dict[str, list[float]] | None = None
 
 
 class Backtester:
@@ -113,9 +165,7 @@ class Backtester:
         # Synthesize sector_map from gics_map if only the latter was given —
         # keeps the legacy 'sector' code path working without branching.
         if gics_map and not sector_map:
-            self.sector_map = {
-                t: row.get("sector") or "Unknown" for t, row in gics_map.items()
-            }
+            self.sector_map = {t: row.get("sector") or "Unknown" for t, row in gics_map.items()}
 
     def run(
         self, alpha_matrix: pd.DataFrame, config: SimulationConfig
@@ -138,9 +188,7 @@ class Backtester:
         alpha = alpha.loc[(alpha.index >= start) & (alpha.index <= end)]
 
         if alpha.empty:
-            raise ValueError(
-                "Alpha matrix is empty after applying date/universe filter"
-            )
+            raise ValueError("Alpha matrix is empty after applying date/universe filter")
 
         # 2. Drop dates with >50% NaN — applies to both halves identically
         nan_frac = alpha.isna().sum(axis=1) / len(alpha.columns)
@@ -172,9 +220,7 @@ class Backtester:
     # the >50%-NaN-row drop.
     # ------------------------------------------------------------------
 
-    def _run_pipeline(
-        self, alpha: pd.DataFrame, config: SimulationConfig
-    ) -> BacktestResult:
+    def _run_pipeline(self, alpha: pd.DataFrame, config: SimulationConfig) -> BacktestResult:
         if alpha.empty:
             raise ValueError("Empty alpha slice passed to pipeline")
 
@@ -182,10 +228,26 @@ class Backtester:
         # ticker wasn't yet an S&P 100 member on date.  Done before decay/
         # neutralization so the masked entries don't leak through rolling ops.
         if config.point_in_time_universe:
-            mask = build_membership_mask(
-                pd.DatetimeIndex(alpha.index), list(alpha.columns)
-            )
+            mask = build_membership_mask(pd.DatetimeIndex(alpha.index), list(alpha.columns))
             alpha = alpha.where(mask, other=0.0)
+
+        # ADV liquidity gating: NaN out alpha cells where the 20-day average
+        # dollar volume is below the threshold on that date.  Done after PIT
+        # gating (since PIT zeros are valid trades for "in-index" stocks)
+        # but before decay/neutralization so masked cells don't leak through
+        # rolling operations downstream.
+        if config.min_adv_dollars > 0:
+            adv = self.data.get("adv20")
+            if adv is None:
+                # Compute it on the fly from dollar_volume so the filter still
+                # works in test contexts that don't pre-load adv20.
+                dv = self.data.get("dollar_volume")
+                if dv is not None:
+                    adv = dv.rolling(20, min_periods=1).mean()
+            if adv is not None:
+                adv_aligned = adv.reindex(index=alpha.index, columns=alpha.columns)
+                liquid_mask = adv_aligned >= config.min_adv_dollars
+                alpha = alpha.where(liquid_mask, other=np.nan)
 
         # Optional decay before trading
         if config.decay and config.decay > 0:
@@ -193,6 +255,10 @@ class Backtester:
 
         # Neutralization
         alpha = self._neutralize(alpha, config.neutralization)
+        # Snapshot the post-neutralization signal for IC analytics.  Done
+        # before any downstream mutation (normalize/clip would distort the
+        # ranks we want IC to measure).
+        signal_snapshot = alpha.copy()
 
         # Normalize to fractional weights (sum of abs ≈ 1 per row)
         abs_sum = alpha.abs().sum(axis=1)
@@ -210,46 +276,74 @@ class Backtester:
         # capturing the "we couldn't trade at the close we just saw" friction.
         if "returns" not in self.data:
             raise ValueError("data['returns'] is required to compute PnL")
-        returns = self.data["returns"].reindex(
-            index=positions.index, columns=positions.columns
-        )
+        returns = self.data["returns"].reindex(index=positions.index, columns=positions.columns)
         exec_lag = max(1, int(config.execution_lag_days))
         stock_pnl = positions.shift(exec_lag) * returns
         gross_pnl = stock_pnl.sum(axis=1, skipna=True)
 
-        # Transaction costs.  Per-stock |Δ$| matrix → flat spread/commission
-        # always, optional Almgren-Chriss square-root impact on top.
+        # ---- Transaction costs, decomposed into 4 sources ---------------
+        # Per-stock |Δ$| trade matrix is the basis for every per-trade cost.
         delta_pos = (positions - positions.shift(1)).abs()
+
+        # (1) Flat bps — commission-style, applied to every trade dollar
         flat_cost_per_stock = delta_pos * config.transaction_cost_bps / 10_000.0
 
+        # (2) Bid/ask spread — disabled by default to preserve existing
+        # backtest numbers; opt in via spread_model.
+        spread_cost_per_stock = pd.DataFrame(0.0, index=positions.index, columns=positions.columns)
+        if config.spread_model == "flat":
+            spread_cost_per_stock = delta_pos * config.half_spread_bps / 10_000.0
+        elif config.spread_model == "corwin_schultz":
+            cs = self.data.get("corwin_schultz")
+            if cs is not None and not cs.empty:
+                cs_aligned = (
+                    cs.reindex(index=positions.index, columns=positions.columns)
+                    .fillna(0.0)
+                    .clip(lower=0.0)
+                )
+                # CS estimator returns a *fractional* spread (e.g. 0.001 = 10 bps).
+                # Half-spread on a round-trip → trade pays half the quoted spread.
+                spread_cost_per_stock = delta_pos * cs_aligned * 0.5
+            # If the CS field isn't loaded, silently zero — same graceful
+            # degradation we use for sqrt_impact missing fields.
+
+        # (3) Almgren-Chriss permanent-impact term
+        impact_cost_per_stock = pd.DataFrame(0.0, index=positions.index, columns=positions.columns)
         if config.cost_model == "sqrt_impact":
             dv = self.data.get("dollar_volume")
             rv = self.data.get("realized_vol")
             if dv is not None and rv is not None and not dv.empty and not rv.empty:
-                dv_aligned = dv.reindex(
-                    index=positions.index, columns=positions.columns
-                ).replace(0, np.nan)
-                rv_aligned = rv.reindex(
-                    index=positions.index, columns=positions.columns
-                ).fillna(0.0)
-                participation = (delta_pos / dv_aligned).fillna(0.0).clip(lower=0.0)
-                # impact_$ = c · σ · |trade$| · √(participation)
-                impact_per_stock = (
-                    config.impact_coefficient
-                    * rv_aligned
-                    * delta_pos
-                    * participation.pow(0.5)
+                dv_aligned = dv.reindex(index=positions.index, columns=positions.columns).replace(
+                    0, np.nan
                 )
-                cost_per_stock = flat_cost_per_stock + impact_per_stock
-            else:
-                # Required fields missing — fall back silently to flat-bps
-                cost_per_stock = flat_cost_per_stock
-        else:
-            cost_per_stock = flat_cost_per_stock
+                rv_aligned = rv.reindex(index=positions.index, columns=positions.columns).fillna(
+                    0.0
+                )
+                participation = (delta_pos / dv_aligned).fillna(0.0).clip(lower=0.0)
+                # impact_$ = c · σ_daily · |trade$| · √(participation)
+                impact_cost_per_stock = (
+                    config.impact_coefficient * rv_aligned * delta_pos * participation.pow(0.5)
+                )
+
+        # (4) Borrow cost — daily charge on absolute short notional.
+        # Held positions, not trades — uses shifted positions so the holder
+        # of the short at start-of-day t pays for the t→t+1 carry.
+        borrow_cost_per_day = pd.Series(0.0, index=positions.index)
+        if config.borrow_cost_bps_annual > 0:
+            shorts = (-positions.shift(1)).clip(lower=0.0)
+            short_notional = shorts.sum(axis=1, skipna=True)
+            daily_rate = config.borrow_cost_bps_annual / (10_000.0 * TRADING_DAYS_PER_YEAR)
+            borrow_cost_per_day = short_notional * daily_rate
+
+        # Aggregate per-day cost streams (sum across stocks for per-trade
+        # components; borrow is already per-day)
+        flat_per_day = flat_cost_per_stock.sum(axis=1, skipna=True)
+        spread_per_day = spread_cost_per_stock.sum(axis=1, skipna=True)
+        impact_per_day = impact_cost_per_stock.sum(axis=1, skipna=True)
+        total_cost_per_day = flat_per_day + spread_per_day + impact_per_day + borrow_cost_per_day
 
         turnover = delta_pos.sum(axis=1, skipna=True)
-        cost = cost_per_stock.sum(axis=1, skipna=True)
-        net_pnl = gross_pnl - cost
+        net_pnl = gross_pnl - total_cost_per_day
 
         cumulative = net_pnl.cumsum()
         daily_returns = net_pnl / config.booksize
@@ -264,6 +358,17 @@ class Backtester:
             weights=weights,
             turnover=turnover.tolist(),
             positions=positions,
+            signal_matrix=signal_snapshot,
+            forward_returns=returns,
+            cost_components={
+                # Explicit float() coercion — pandas' .tolist() is typed
+                # loosely (list[Any]), and BacktestResult.cost_components
+                # is list[float] | None.
+                "flat": [float(v) for v in flat_per_day.tolist()],
+                "spread": [float(v) for v in spread_per_day.tolist()],
+                "impact": [float(v) for v in impact_per_day.tolist()],
+                "borrow": [float(v) for v in borrow_cost_per_day.tolist()],
+            },
         )
 
     # ------------------------------------------------------------------
@@ -273,9 +378,7 @@ class Backtester:
     # the split forward in time removes that luck.
     # ------------------------------------------------------------------
 
-    def walk_forward(
-        self, alpha_matrix: pd.DataFrame, config: SimulationConfig
-    ) -> list[dict]:
+    def walk_forward(self, alpha_matrix: pd.DataFrame, config: SimulationConfig) -> list[dict]:
         """Slide a (train_days → test_days) window across the full history.
 
         Returns one dict per window: {train/test period, train Sharpe, test

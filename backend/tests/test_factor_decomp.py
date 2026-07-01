@@ -7,7 +7,6 @@ factors plus pure alpha, then verify the regression recovers the loadings.
 
 import numpy as np
 import pandas as pd
-
 from analytics.factor_decomp import FactorDecomposition
 
 
@@ -73,10 +72,7 @@ def test_returns_none_when_too_few_observations():
 def test_returns_none_when_ff5_missing():
     out = FactorDecomposition().compute(
         daily_returns=[0.001] * 200,
-        dates=[
-            d.strftime("%Y-%m-%d")
-            for d in pd.date_range("2023-01-02", periods=200, freq="B")
-        ],
+        dates=[d.strftime("%Y-%m-%d") for d in pd.date_range("2023-01-02", periods=200, freq="B")],
         ff5=pd.DataFrame(),
     )
     assert out is None

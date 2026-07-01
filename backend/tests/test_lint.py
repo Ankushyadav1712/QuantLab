@@ -1,5 +1,4 @@
 import pytest
-
 from engine.lint import lint_ast
 from engine.parser import Parser
 
@@ -25,9 +24,7 @@ def _lint(expr: str):
 def test_negative_shift_is_an_error(expr, op):
     diags = _lint(expr)
     errs = [d for d in diags if d["severity"] == "error"]
-    assert any(d["op"] == op for d in errs), (
-        f"Expected {op} look-ahead error in {expr!r}: {diags}"
-    )
+    assert any(d["op"] == op for d in errs), f"Expected {op} look-ahead error in {expr!r}: {diags}"
 
 
 # ---------- non-positive windows on rolling ops ----------
@@ -53,9 +50,7 @@ def test_non_positive_window_is_an_error(expr, op):
 # ---------- zero-shift warnings (technically allowed but a no-op) ----------
 
 
-@pytest.mark.parametrize(
-    "expr,op", [("delay(close, 0)", "delay"), ("delta(close, 0)", "delta")]
-)
+@pytest.mark.parametrize("expr,op", [("delay(close, 0)", "delay"), ("delta(close, 0)", "delta")])
 def test_zero_shift_is_a_warning(expr, op):
     diags = _lint(expr)
     warns = [d for d in diags if d["severity"] == "warning"]

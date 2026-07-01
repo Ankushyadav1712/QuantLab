@@ -17,7 +17,6 @@ from engine.parser import (
     UnaryOp,
 )
 
-
 # Operators where one of the args MUST be positive (a rolling window length).
 # Maps op name -> argument index (0-based) of the window arg.
 WINDOWED_OPERATORS: dict[str, int] = {
@@ -30,6 +29,19 @@ WINDOWED_OPERATORS: dict[str, int] = {
     "decay_linear": 1,
     "ts_corr": 2,
     "ts_cov": 2,
+    # Phase A additions
+    "ts_median": 1,
+    "ts_skewness": 1,
+    "ts_kurtosis": 1,
+    "ts_zscore": 1,
+    "ts_quantile": 1,
+    "ts_arg_max": 1,
+    "ts_arg_min": 1,
+    "ts_product": 1,
+    "ts_decay_exp": 1,
+    "ts_partial_corr": 3,
+    "ts_regression": 2,
+    "ts_min_max_diff": 1,
 }
 
 # Operators where the second arg is a *shift* (not a window).  Negative values
@@ -37,6 +49,7 @@ WINDOWED_OPERATORS: dict[str, int] = {
 SHIFT_OPERATORS: dict[str, int] = {
     "delta": 1,
     "delay": 1,
+    "ts_returns": 1,  # x / x.shift(d) - 1 — same look-ahead failure mode as delta
 }
 
 
@@ -148,9 +161,7 @@ def _check_function(node: FunctionCall, diagnostics: list[dict[str, Any]]) -> No
                 {
                     "severity": "error",
                     "op": name,
-                    "message": (
-                        f"{name}(x, {d}) requires a positive rolling window. Got {d}."
-                    ),
+                    "message": (f"{name}(x, {d}) requires a positive rolling window. Got {d}."),
                 }
             )
         elif d > 504:  # > ~2 trading years — usually a typo

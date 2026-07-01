@@ -1,5 +1,4 @@
 import pytest
-
 from engine.parser import (
     BinaryOp,
     DataField,

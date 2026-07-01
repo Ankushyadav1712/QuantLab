@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-
 from engine.backtester import Backtester, BacktestResult, SimulationConfig
 
 
@@ -110,16 +109,12 @@ def test_truncation_caps_fractional_weights(simple_data, sector_map):
     # |w_i| should never exceed 0.1
     assert (result.weights.abs().to_numpy() <= 0.1 + 1e-12).all()
     # corresponding dollar positions never exceed truncation * booksize
-    assert (
-        result.positions.abs().to_numpy() <= cfg.truncation * cfg.booksize + 1e-6
-    ).all()
+    assert (result.positions.abs().to_numpy() <= cfg.truncation * cfg.booksize + 1e-6).all()
 
 
 def test_universe_and_date_filter(simple_data, sector_map):
     closes = simple_data["close"]
-    alpha = pd.DataFrame(
-        np.ones(closes.shape), index=closes.index, columns=closes.columns
-    )
+    alpha = pd.DataFrame(np.ones(closes.shape), index=closes.index, columns=closes.columns)
 
     bt = Backtester(simple_data, sector_map)
     cfg = SimulationConfig(
@@ -168,9 +163,7 @@ def _full_universe_config(data, **overrides):
     return SimulationConfig(**cfg)
 
 
-def test_constant_alpha_zero_weights_after_market_neutralization(
-    synth_data, synth_sector_map
-):
+def test_constant_alpha_zero_weights_after_market_neutralization(synth_data, synth_sector_map):
     closes = synth_data["close"]
     alpha = pd.DataFrame(1.0, index=closes.index, columns=closes.columns)
 
@@ -222,9 +215,7 @@ def test_costs_reduce_pnl_vs_zero_cost(synth_data, synth_sector_map):
 
     bt = Backtester(synth_data, synth_sector_map)
     free, _ = bt.run(alpha, _full_universe_config(synth_data, transaction_cost_bps=0.0))
-    paid, _ = bt.run(
-        alpha, _full_universe_config(synth_data, transaction_cost_bps=10.0)
-    )
+    paid, _ = bt.run(alpha, _full_universe_config(synth_data, transaction_cost_bps=10.0))
 
     # Same gross PnL, but the paid run trades into costs every day → strictly lower
     # final cumulative PnL.  And the cost magnitude must equal sum(turnover) * bps.
@@ -394,13 +385,9 @@ def test_walk_forward_produces_one_window_per_step(synth_data, synth_sector_map)
         assert isinstance(w["test_sharpe"], float)
 
 
-def test_walk_forward_returns_empty_when_history_too_short(
-    synth_data, synth_sector_map
-):
+def test_walk_forward_returns_empty_when_history_too_short(synth_data, synth_sector_map):
     closes = synth_data["close"]
-    alpha = pd.DataFrame(
-        np.zeros(closes.shape), index=closes.index, columns=closes.columns
-    )
+    alpha = pd.DataFrame(np.zeros(closes.shape), index=closes.index, columns=closes.columns)
     bt = Backtester(synth_data, synth_sector_map)
     cfg = _full_universe_config(
         synth_data,
@@ -460,9 +447,7 @@ def test_execution_lag_two_zeros_first_two_days(synth_data, synth_sector_map):
     one, _ = bt.run(alpha, _full_universe_config(synth_data, transaction_cost_bps=0.0))
     two, _ = bt.run(
         alpha,
-        _full_universe_config(
-            synth_data, transaction_cost_bps=0.0, execution_lag_days=2
-        ),
+        _full_universe_config(synth_data, transaction_cost_bps=0.0, execution_lag_days=2),
     )
 
     one_arr = np.asarray(one.daily_pnl, dtype=float)

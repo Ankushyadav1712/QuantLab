@@ -27,23 +27,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data.universes import (  # noqa: E402
-    _TICKERS_DIR,
+    _GICS_CATALOG,
     _GICS_DYNAMIC_CACHE,
     _TICKER_LIST_TTL,
+    _TICKERS_DIR,
     _fetch_sp500_tickers_and_gics,
     _get_russell1000_tickers,
     _save_gics_dynamic_cache,
-    _GICS_CATALOG,
 )
 
 
 def _refresh_sp500(force: bool = False) -> None:
     path = _TICKERS_DIR / "sp500.txt"
-    if (
-        not force
-        and path.exists()
-        and (time.time() - path.stat().st_mtime) < _TICKER_LIST_TTL
-    ):
+    if not force and path.exists() and (time.time() - path.stat().st_mtime) < _TICKER_LIST_TTL:
         print(f"[sp500] cache is fresh ({path}), skipping (use --force to override)")
         return
 
@@ -61,23 +57,15 @@ def _refresh_sp500(force: bool = False) -> None:
     need_cache = {t: v for t, v in gics_map.items() if t not in _GICS_CATALOG}
     if need_cache:
         _save_gics_dynamic_cache(need_cache)
-        print(
-            f"[sp500] cached GICS for {len(need_cache)} tickers → {_GICS_DYNAMIC_CACHE}"
-        )
+        print(f"[sp500] cached GICS for {len(need_cache)} tickers → {_GICS_DYNAMIC_CACHE}")
     else:
         print("[sp500] all tickers already in static GICS catalog")
 
 
 def _refresh_russell1000(force: bool = False) -> None:
     path = _TICKERS_DIR / "russell1000.txt"
-    if (
-        not force
-        and path.exists()
-        and (time.time() - path.stat().st_mtime) < _TICKER_LIST_TTL
-    ):
-        print(
-            f"[russell1000] cache is fresh ({path}), skipping (use --force to override)"
-        )
+    if not force and path.exists() and (time.time() - path.stat().st_mtime) < _TICKER_LIST_TTL:
+        print(f"[russell1000] cache is fresh ({path}), skipping (use --force to override)")
         return
 
     print("[russell1000] fetching tickers from iShares IWB holdings …")
@@ -99,9 +87,7 @@ def _refresh_russell1000(force: bool = False) -> None:
     existing_gics = set(_GICS_CATALOG.keys()) | set(_load_gics_dynamic_cache().keys())
     need_gics = [t for t in tickers if t not in existing_gics]
     if need_gics:
-        print(
-            f"[russell1000] fetching GICS for {len(need_gics)} new tickers via yfinance …"
-        )
+        print(f"[russell1000] fetching GICS for {len(need_gics)} new tickers via yfinance …")
         import yfinance as yf
 
         new_entries: dict[str, list[str]] = {}
@@ -113,17 +99,13 @@ def _refresh_russell1000(force: bool = False) -> None:
             for t in batch:
                 try:
                     info = yf.Ticker(t).info
-                    sector = _YF_TO_GICS.get(
-                        info.get("sector", "Unknown") or "Unknown", "Unknown"
-                    )
+                    sector = _YF_TO_GICS.get(info.get("sector", "Unknown") or "Unknown", "Unknown")
                     industry = info.get("industry", "Unknown") or "Unknown"
                     new_entries[t] = [sector, sector, industry, industry]
                 except Exception:
                     new_entries[t] = ["Unknown", "Unknown", "Unknown", "Unknown"]
             pct = min(100, round(100 * (i + batch_size) / len(need_gics)))
-            print(
-                f"  … {pct}% ({min(i + batch_size, len(need_gics))}/{len(need_gics)})"
-            )
+            print(f"  … {pct}% ({min(i + batch_size, len(need_gics))}/{len(need_gics)})")
             if i + batch_size < len(need_gics):
                 time.sleep(0.5)
 
