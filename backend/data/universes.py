@@ -122,9 +122,7 @@ def _load_or_fetch_ticker_list(
         if path.exists():
             stale = [ln.strip() for ln in path.read_text().splitlines() if ln.strip()]
             if stale:
-                _warnings.warn(
-                    f"[universe:{name}] using stale cache ({len(stale)} tickers)"
-                )
+                _warnings.warn(f"[universe:{name}] using stale cache ({len(stale)} tickers)")
                 return stale
 
     return []
@@ -141,12 +139,8 @@ def _fetch_sp500_tickers_and_gics() -> tuple[list[str], dict[str, list[str]]]:
         (c for c in df.columns if str(c).strip().lower().startswith("symbol")),
         df.columns[0],
     )
-    sector_col = next(
-        (c for c in df.columns if "gics sector" in str(c).strip().lower()), None
-    )
-    sub_col = next(
-        (c for c in df.columns if "sub-industry" in str(c).strip().lower()), None
-    )
+    sector_col = next((c for c in df.columns if "gics sector" in str(c).strip().lower()), None)
+    sub_col = next((c for c in df.columns if "sub-industry" in str(c).strip().lower()), None)
 
     tickers: list[str] = []
     gics_map: dict[str, list[str]] = {}
@@ -202,9 +196,7 @@ def _get_russell1000_tickers() -> list[str]:
 
         lines = raw.splitlines()
         # iShares CSV has metadata rows before the actual header
-        start = next(
-            (i for i, ln in enumerate(lines) if ln.strip().startswith("Ticker,")), None
-        )
+        start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("Ticker,")), None)
         if start is None:
             return []
         import io as _io  # noqa: PLC0415
@@ -1088,14 +1080,11 @@ def list_universes() -> list[dict[str, Any]]:
     """All built-in universes with metadata for the /api/universes endpoint."""
     out = []
     for uid, u in _UNIVERSES.items():
-        # For lazy universes use the cached file count, or the estimate
         tickers = u["tickers"]
         if tickers is None:
             cache_path = _TICKERS_DIR / f"{uid}.txt"
             if cache_path.exists():
-                ticker_count = sum(
-                    1 for ln in cache_path.read_text().splitlines() if ln.strip()
-                )
+                ticker_count = sum(1 for ln in cache_path.read_text().splitlines() if ln.strip())
             else:
                 ticker_count = u.get("ticker_count_estimate", 0)
         else:
@@ -1123,9 +1112,7 @@ def get_universe(universe_id: str) -> dict[str, Any]:
     from the web on first call and cached on disk for 30 days.
     """
     if universe_id not in _UNIVERSES:
-        raise KeyError(
-            f"Unknown universe {universe_id!r}. Known: {sorted(_UNIVERSES.keys())}"
-        )
+        raise KeyError(f"Unknown universe {universe_id!r}. Known: {sorted(_UNIVERSES.keys())}")
     u = _UNIVERSES[universe_id]
     tickers = u["tickers"]
 
@@ -1140,8 +1127,7 @@ def get_universe(universe_id: str) -> dict[str, Any]:
             tickers = fetch_fn()
         if not tickers:
             _warnings.warn(
-                f"[universe:{universe_id}] ticker list unavailable; "
-                "falling back to sp100_extended"
+                f"[universe:{universe_id}] ticker list unavailable; falling back to sp100_extended"
             )
             return get_universe("sp100_extended")
 
@@ -1196,6 +1182,33 @@ def default_universe_id() -> str:
             return uid
     # Fallback if no preset is marked default
     return next(iter(_UNIVERSES))
+
+
+def gics_data_frames(
+    dates,
+    tickers: list[str],
+):
+    """Build (dates × tickers) string DataFrames for each GICS level.
+
+    Used by the evaluator so expressions can reference ``sector``,
+    ``industry_group``, etc. as data fields and feed them into the group_*
+    operators.  Each cell is the ticker's GICS label string (constant across
+    dates per ticker).  Tickers absent from the catalog get NaN, which the
+    group operators treat as "exclude from groupby".
+    """
+    import pandas as _pd  # local import keeps universes.py framework-free at top
+
+    gics = gics_for(tickers)
+    out: dict[str, _pd.DataFrame] = {}
+    for level in GICS_LEVELS:
+        per_ticker = [gics[t].get(level) for t in tickers]
+        # Broadcast the per-ticker label across all dates
+        out[level] = _pd.DataFrame(
+            [per_ticker] * len(dates),
+            index=dates,
+            columns=tickers,
+        )
+    return out
 
 
 def available_neutralizations(

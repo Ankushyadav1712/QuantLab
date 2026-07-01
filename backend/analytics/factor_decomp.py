@@ -79,9 +79,7 @@ class FactorDecomposition:
             S = (X_aug * resid[:, None]).T @ (X_aug * resid[:, None])  # lag-0 term
             for ell in range(1, lag + 1):
                 weight = 1.0 - ell / (lag + 1.0)
-                gamma = (X_aug[ell:] * resid[ell:, None]).T @ (
-                    X_aug[:-ell] * resid[:-ell, None]
-                )
+                gamma = (X_aug[ell:] * resid[ell:, None]).T @ (X_aug[:-ell] * resid[:-ell, None])
                 S = S + weight * (gamma + gamma.T)
             cov_hac = xtx_inv @ S @ xtx_inv
             se = np.sqrt(np.diag(cov_hac))

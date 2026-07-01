@@ -3,9 +3,7 @@
 import math
 
 import pytest
-
 from analytics.deflated_sharpe import _norm_cdf, _norm_ppf, deflated_sharpe
-
 
 # ---------- Helpers ----------
 
@@ -61,9 +59,7 @@ def test_deflated_sharpe_more_trials_lower_pvalue():
 
 def test_deflated_sharpe_high_sharpe_significant():
     """A genuinely strong Sharpe (3.0) over 500 days survives 100 trials."""
-    out = deflated_sharpe(
-        sharpe_annual=3.0, n_trials=100, n_obs=500, skew=0.0, kurt=3.0
-    )
+    out = deflated_sharpe(sharpe_annual=3.0, n_trials=100, n_obs=500, skew=0.0, kurt=3.0)
     assert out["is_significant"] is True
     assert out["p_value"] > 0.95
 
@@ -77,12 +73,8 @@ def test_deflated_sharpe_returns_none_on_degenerate_input():
 def test_deflated_sharpe_negative_skew_lowers_threshold_significance():
     """Crash-prone return distributions (negative skew) hurt the deflated SR
     via the higher-moment correction term."""
-    base = deflated_sharpe(
-        sharpe_annual=1.5, n_trials=20, n_obs=500, skew=0.0, kurt=3.0
-    )
-    skewed = deflated_sharpe(
-        sharpe_annual=1.5, n_trials=20, n_obs=500, skew=-0.5, kurt=5.0
-    )
+    base = deflated_sharpe(sharpe_annual=1.5, n_trials=20, n_obs=500, skew=0.0, kurt=3.0)
+    skewed = deflated_sharpe(sharpe_annual=1.5, n_trials=20, n_obs=500, skew=-0.5, kurt=5.0)
     # Negative skew + fat tails → narrower confidence in the same Sharpe,
     # i.e. lower p-value than the symmetric case.
     assert skewed["p_value"] < base["p_value"]

@@ -3,7 +3,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-
 from data.universes import (
     GICS_LEVELS,
     all_tickers,
@@ -14,7 +13,6 @@ from data.universes import (
     list_universes,
 )
 from engine.backtester import Backtester, SimulationConfig
-
 
 # ---------- Registry ----------
 
@@ -143,12 +141,8 @@ def four_sector_gics():
     }
 
 
-@pytest.mark.parametrize(
-    "mode", ["sector", "industry_group", "industry", "sub_industry"]
-)
-def test_gics_neutralization_demeans_per_group(
-    mode, four_sector_data, four_sector_gics
-):
+@pytest.mark.parametrize("mode", ["sector", "industry_group", "industry", "sub_industry"])
+def test_gics_neutralization_demeans_per_group(mode, four_sector_data, four_sector_gics):
     """For a constant per-group alpha, GICS-level neutralization must zero
     every weight (within-group demean of a constant is 0)."""
     closes = four_sector_data["close"]

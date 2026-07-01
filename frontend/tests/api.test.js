@@ -36,6 +36,7 @@ describe('api', () => {
     expect(JSON.parse(opts.body)).toEqual({
       expression: 'rank(close)',
       settings: { neutralization: 'market' },
+      n_trials: 1,
     });
   });
 
