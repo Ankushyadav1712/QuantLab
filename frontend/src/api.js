@@ -57,6 +57,8 @@ export const api = {
     }),
   compare: (expressions, settings = {}) =>
     request('POST', '/api/compare', { expressions, settings }),
+  batchSimulate: (alphas, settings = {}) =>
+    request('POST', '/api/batch_simulate', { alphas, settings }),
   sweep: (expression, settings = {}, max_combinations = 50) =>
     request('POST', '/api/sweep', { expression, settings, max_combinations }),
   getCorrelations: (ids) =>
