@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import time
 import warnings
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -59,6 +60,7 @@ from data.universes import (
 from db.database import connect
 from db.migrations import init_db
 from engine.backtester import Backtester, SimulationConfig
+from engine.batch import run_batch
 from engine.evaluator import AlphaEvaluator
 from engine.lint import lint_ast
 from engine.parser import BinaryOp, DataField, FunctionCall, Parser, UnaryOp
@@ -68,6 +70,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from models.schemas import (
     AlphaSaveRequest,
+    BatchSimulationRequest,
     CompareRequest,
     CorrelationRequest,
     MultiAlphaRequest,
@@ -2220,6 +2223,93 @@ def compare_alphas(request: Request, req: CompareRequest):
     return {
         "alphas": out_alphas,
         "settings": _config_to_dict(cfg),
+    }
+
+
+_BATCH_MAX_ALPHAS = 50
+
+
+@app.post("/api/batch_simulate")
+@limiter.limit(_LIMIT_SIMULATE)
+def batch_simulate(request: Request, req: BatchSimulationRequest):
+    """Run up to ``_BATCH_MAX_ALPHAS`` alphas through the IS-only pipeline in
+    parallel and return a ranked metrics table + a return-series correlation
+    matrix.
+
+    The fast, scannable multi-alpha view: evaluate + backtest N candidates at
+    once, rank them, and see which are redundant. Click a row and run
+    /api/simulate for the full IS/OOS tearsheet on a winner.
+    """
+    del request  # required-by-name for slowapi
+    if not _state.get("ready", False):
+        raise HTTPException(
+            status_code=503, detail="System is downloading financial data. Please wait a moment."
+        )
+    if not req.alphas:
+        raise HTTPException(status_code=400, detail="No alphas provided")
+    if len(req.alphas) > _BATCH_MAX_ALPHAS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Batch too large: {len(req.alphas)} alphas (max {_BATCH_MAX_ALPHAS}). "
+                "Split into smaller batches."
+            ),
+        )
+
+    # Normalize: require an expression, auto-assign missing ids, reject dupes so
+    # the ranked table and correlation matrix have stable, unique row keys.
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, a in enumerate(req.alphas):
+        expr = str(a.get("expression") or "").strip()
+        if not expr:
+            raise HTTPException(
+                status_code=400, detail=f"Alpha at index {i} is missing an 'expression'"
+            )
+        aid = str(a.get("id") or f"alpha_{i + 1}")
+        if aid in seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate alpha id: {aid!r}")
+        seen.add(aid)
+        items.append({"id": aid, "expression": expr})
+
+    # Resolve the universe ONCE up front — it can mutate _state["data"] for lazy
+    # universes, so it must run single-threaded before the parallel fan-out.
+    cfg = _make_config(req.settings, run_oos=False)
+    _, gics_map, universe_id = _resolve_universe(req.settings or {})
+
+    # Snapshot the shared, read-only inputs the worker threads will read.
+    data = _state["data"]
+    gics_data = _state.get("gics_data", {})
+    spy = _state.get("spy_returns")
+    size_field = data.get("market_cap")
+    if size_field is None:
+        size_field = data.get("close")
+
+    started = time.perf_counter()
+    out = run_batch(
+        items,
+        cfg,
+        data=data,
+        gics_data=gics_data,
+        gics_map=gics_map,
+        spy=spy,
+        size_field=size_field,
+    )
+    elapsed = time.perf_counter() - started
+
+    n_ok = sum(1 for r in out["results"] if "metrics" in r)
+    log.info(
+        "batch_simulate",
+        extra={"n_alphas": len(items), "n_ok": n_ok, "elapsed_sec": round(elapsed, 2)},
+    )
+    return {
+        "results": out["results"],
+        "correlation_matrix": out["correlation_matrix"],
+        "n_alphas": len(items),
+        "n_ok": n_ok,
+        "elapsed_sec": round(elapsed, 3),
+        "settings": _config_to_dict(cfg),
+        "universe_id": universe_id,
     }
 
 

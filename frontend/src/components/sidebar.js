@@ -17,6 +17,7 @@ export function createSidebar(container) {
       <button type="button" data-role="blend" disabled>Blend Selected</button>
       <button type="button" data-role="compare" disabled>Compare Selected</button>
       <button type="button" data-role="correlate" disabled>Show Correlations</button>
+      <button type="button" data-role="batch" disabled>Batch Compare</button>
     </div>
   `;
 
@@ -24,13 +25,14 @@ export function createSidebar(container) {
   const blendBtn = container.querySelector('[data-role="blend"]');
   const compareBtn = container.querySelector('[data-role="compare"]');
   const corrBtn = container.querySelector('[data-role="correlate"]');
+  const batchBtn = container.querySelector('[data-role="batch"]');
 
   let alphas = [];
   let selected = new Set();
   let weights = {}; // id -> number
   const callbacks = {
     onLoad: null, onDelete: null, onBlend: null,
-    onCompare: null, onCorrelate: null,
+    onCompare: null, onCorrelate: null, onBatch: null,
   };
 
   blendBtn.addEventListener('click', () => {
@@ -42,6 +44,9 @@ export function createSidebar(container) {
   corrBtn.addEventListener('click', () => {
     if (callbacks.onCorrelate) callbacks.onCorrelate([...selected]);
   });
+  batchBtn.addEventListener('click', () => {
+    if (callbacks.onBatch) callbacks.onBatch(getSelectedItems());
+  });
 
   function updateActionState() {
     const n = selected.size;
@@ -49,6 +54,8 @@ export function createSidebar(container) {
     // /api/compare requires 2-4 expressions; the button reflects that range
     compareBtn.disabled = n < 2 || n > 4;
     corrBtn.disabled = n < 2;
+    // Batch handles 2–50 alphas (server-capped): a ranked table + correlation.
+    batchBtn.disabled = n < 2;
   }
 
   function getSelectedItems() {
@@ -202,5 +209,6 @@ export function createSidebar(container) {
     setOnBlend: (cb) => { callbacks.onBlend = cb; },
     setOnCompare: (cb) => { callbacks.onCompare = cb; },
     setOnCorrelate: (cb) => { callbacks.onCorrelate = cb; },
+    setOnBatchCompare: (cb) => { callbacks.onBatch = cb; },
   };
 }

@@ -11,6 +11,7 @@ import { createSidebar } from './components/sidebar.js';
 import { openTearsheet } from './components/tearsheet.js';
 import { createComparison } from './components/comparison.js';
 import { createCorrelation } from './components/correlation.js';
+import { createBatchComparison } from './components/batch_comparison.js';
 import { createSweepResults } from './components/sweep.js';
 import { toast } from './ui/toast.js';
 
@@ -49,6 +50,7 @@ root.innerHTML = `
       <section id="charts"></section>
       <section id="comparison"></section>
       <section id="correlation"></section>
+      <section id="batch-comparison"></section>
       <section id="research-charts"></section>
       <section id="portfolio-analysis"></section>
     </main>
@@ -61,6 +63,7 @@ const charts = createCharts(document.getElementById('charts'));
 const sidebar = createSidebar(document.getElementById('sidebar'));
 const correlation = createCorrelation(document.getElementById('correlation'));
 const comparison = createComparison(document.getElementById('comparison'));
+const batchComparison = createBatchComparison(document.getElementById('batch-comparison'));
 const sweep = createSweepResults(document.getElementById('sweep'));
 const portfolioAnalysis = createPortfolioAnalysis(
   document.getElementById('portfolio-analysis')
@@ -367,6 +370,38 @@ sidebar.setOnCorrelate(async (ids) => {
     document.getElementById('correlation').scrollIntoView({ behavior: 'smooth' });
   } catch (e) {
     toast(e.message, 'error', { title: 'Correlations failed' });
+  }
+});
+
+sidebar.setOnBatchCompare(async (items) => {
+  if (!items || items.length < 2) return;
+  const settings = editor.getSettings();
+  const names = Object.fromEntries(items.map((i) => [String(i.id), i.name]));
+  try {
+    const resp = await api.batchSimulate(
+      items.map((i) => ({ id: i.id, expression: i.expression })),
+      settings,
+    );
+    batchComparison.render(resp, { names });
+    document.getElementById('batch-comparison').scrollIntoView({ behavior: 'smooth' });
+    toast(`Batch: ${resp.n_ok}/${resp.n_alphas} ran`, 'success', { duration: 2500 });
+  } catch (e) {
+    toast(e.message, 'error', { title: 'Batch compare failed' });
+  }
+});
+
+// Clicking a batch row loads that saved alpha's full backtest — same as the
+// sidebar's load action.
+batchComparison.setOnSelectAlpha(async (id) => {
+  try {
+    const record = await api.getAlpha(id);
+    editor.setExpression(record.expression);
+    if (record.result) {
+      renderResponse(record.result);
+      editor.setSaveEnabled(false);
+    }
+  } catch (e) {
+    toast(e.message, 'error', { title: 'Load failed' });
   }
 });
 

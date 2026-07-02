@@ -101,3 +101,19 @@ class CompareRequest(BaseModel):
     )
     settings: dict[str, Any] | None = None
     n_trials: int = 1
+
+
+class BatchSimulationRequest(BaseModel):
+    """Run many alphas (up to a server-enforced cap) through the IS-only
+    pipeline and return a ranked metrics table + return-series correlation.
+
+    Each item is ``{id?: str, expression: str}``; missing ids are auto-assigned
+    by the endpoint. IS-only by design — the batch view is for scanning and
+    ranking. Click a row and run ``/api/simulate`` for the full IS/OOS tearsheet.
+    """
+
+    alphas: list[dict[str, Any]] = Field(
+        ...,
+        description="Up to 50 items, each {id?: str, expression: str}.",
+    )
+    settings: dict[str, Any] | None = None
