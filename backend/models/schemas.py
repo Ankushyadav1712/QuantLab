@@ -68,6 +68,11 @@ class MultiAlphaRequest(BaseModel):
     # Only used by mv_optimal — annualized portfolio vol target.  Ignored
     # otherwise.  None → no scaling, weights normalize to sum=1.
     target_vol: float | None = None
+    # When True, prune near-duplicate alphas (return-correlation > 0.7 to an
+    # already-kept, higher-IC-t-stat alpha) before weighting — so a book of
+    # variations on one idea doesn't dominate the blend. Default off for
+    # backwards compatibility.
+    orthogonalize: bool = False
 
 
 class CorrelationRequest(BaseModel):

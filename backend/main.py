@@ -21,6 +21,7 @@ from analytics.diversification import (
     extract_daily_returns_from_saved,
 )
 from analytics.factor_decomp import FactorDecomposition
+from analytics.ic_metrics import compute_ic_summary
 from analytics.pareto import compute_pareto
 from analytics.performance import PerformanceAnalytics, _safe_float, _safe_list
 from analytics.provenance import build_provenance, compute_code_signature, compute_git_hash
@@ -61,6 +62,7 @@ from db.database import connect
 from db.migrations import init_db
 from engine.backtester import Backtester, SimulationConfig
 from engine.batch import run_batch
+from engine.combine import greedy_orthogonal_select, ic_weights
 from engine.evaluator import AlphaEvaluator
 from engine.lint import lint_ast
 from engine.parser import BinaryOp, DataField, FunctionCall, Parser, UnaryOp
@@ -2340,6 +2342,11 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
     bt = Backtester(_state["data"], SECTOR_MAP)
     alpha_matrices: list[pd.DataFrame] = []
     return_series: list[pd.Series] = []
+    # Per-alpha IS Information Coefficient + its t-stat. Computed for every
+    # blend (cheap) so the response can surface each alpha's IC; also the
+    # inputs for the ic_weighted method and orthogonal-selection ranking.
+    ics: list[float | None] = []
+    ic_tstats: list[float | None] = []
     for expr in expressions:
         matrix = _evaluate(expr)
         alpha_matrices.append(matrix)
@@ -2348,29 +2355,61 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
         try:
             standalone_cfg = _make_config({**(req.settings or {}), "run_oos": False})
             is_result, _ = bt.run(matrix, standalone_cfg)
-            return_series.append(
-                pd.Series(is_result.daily_returns, index=pd.to_datetime(is_result.dates))
-            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=400, detail=f"Standalone backtest failed for {expr!r}: {exc}"
             )
+        return_series.append(
+            pd.Series(is_result.daily_returns, index=pd.to_datetime(is_result.dates))
+        )
+        sig = is_result.signal_matrix
+        fwd = is_result.forward_returns
+        if sig is not None and fwd is not None:
+            ic_summary = compute_ic_summary(sig, fwd)
+            ics.append(ic_summary.get("ic"))
+            ic_tstats.append(ic_summary.get("ic_tstat"))
+        else:
+            ics.append(None)
+            ic_tstats.append(None)
 
-    # Compute weights via the chosen method.  user_weights are only used when
-    # weight_method == "equal" — but we treat equal as "user-supplied weights"
-    # (the existing semantics) so people can still hand-pick weights.
+    # Optional orthogonalization: greedily drop alphas whose return series is
+    # >0.7 correlated to an already-kept, higher-IC-t-stat alpha, so a cluster
+    # of near-duplicates can't dominate the blend. Off by default.
+    dropped: list[dict[str, Any]] = []
+    kept_idx = list(range(len(expressions)))
+    if req.orthogonalize and len(expressions) >= 2:
+        corr_df = pd.concat(return_series, axis=1).dropna(how="any")
+        if corr_df.shape[1] == len(expressions) and len(corr_df) >= 2:
+            kept_idx = greedy_orthogonal_select(corr_df.corr().values, ic_tstats, max_rho=0.7)
+            dropped = [
+                {"expression": expressions[i], "reason": "return-correlation > 0.7 to a kept alpha"}
+                for i in range(len(expressions))
+                if i not in kept_idx
+            ]
+
+    kept_exprs = [expressions[i] for i in kept_idx]
+    kept_matrices = [alpha_matrices[i] for i in kept_idx]
+    kept_returns = [return_series[i] for i in kept_idx]
+    kept_ics = [ics[i] for i in kept_idx]
+
+    # Compute weights over the kept set. "equal" uses the sidebar's per-alpha
+    # weights; "ic_weighted" weights by IC; everything else defers to the
+    # covariance-aware optimizers in mv_optimizer.
     if req.weight_method == "equal":
-        raw_weights = np.array([float(a.get("weight", 1.0)) for a in req.alphas])
+        raw_weights = np.array([float(req.alphas[i].get("weight", 1.0)) for i in kept_idx])
         total = float(np.abs(raw_weights).sum())
         if total == 0:
             raise HTTPException(status_code=400, detail="Weights sum to zero")
         computed = raw_weights / total
         weight_method_used = "equal_user_supplied"
+    elif req.weight_method == "ic_weighted":
+        computed = ic_weights(kept_ics)
+        weight_method_used = "ic_weighted"
     else:
         try:
             from analytics.mv_optimizer import compute_weights
 
-            returns_df = pd.concat(return_series, axis=1).dropna(how="any")
+            returns_df = pd.concat(kept_returns, axis=1).dropna(how="any")
             if returns_df.empty:
                 raise ValueError("All alphas had empty return series after alignment")
             computed = compute_weights(req.weight_method, returns_df, target_vol=req.target_vol)
@@ -2378,11 +2417,11 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-    # Build the weighted blend
+    # Build the weighted blend over the kept alphas.
     items: list[dict[str, Any]] = []
     combined: pd.DataFrame | None = None
-    for w, expr, matrix in zip(computed, expressions, alpha_matrices):
-        items.append({"expression": expr, "weight": float(w)})
+    for w, expr, matrix, ic in zip(computed, kept_exprs, kept_matrices, kept_ics):
+        items.append({"expression": expr, "weight": float(w), "ic": ic})
         weighted = matrix * float(w)
         combined = weighted if combined is None else combined.add(weighted, fill_value=0.0)
 
@@ -2392,6 +2431,10 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
     response["expression"] = "multi-blend"
     response["settings"]["alphas"] = items
     response["settings"]["weight_method"] = weight_method_used
+    if req.orthogonalize:
+        response["settings"]["orthogonalize"] = True
+        response["settings"]["effective_n"] = len(kept_exprs)
+        response["settings"]["dropped_alphas"] = dropped
     if req.target_vol is not None:
         response["settings"]["target_vol"] = req.target_vol
     return response

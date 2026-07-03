@@ -51,9 +51,9 @@ export const api = {
   listAlphas: () => request('GET', '/api/alphas'),
   getAlpha: (id) => request('GET', `/api/alphas/${id}`),
   deleteAlpha: (id) => request('DELETE', `/api/alphas/${id}`, undefined, { auth: true }),
-  multiBlend: (alphas, settings = {}, weight_method = 'equal', target_vol = null) =>
+  multiBlend: (alphas, settings = {}, weight_method = 'equal', target_vol = null, orthogonalize = false) =>
     request('POST', '/api/alphas/multi-blend', {
-      alphas, settings, weight_method, target_vol,
+      alphas, settings, weight_method, target_vol, orthogonalize,
     }),
   compare: (expressions, settings = {}) =>
     request('POST', '/api/compare', { expressions, settings }),

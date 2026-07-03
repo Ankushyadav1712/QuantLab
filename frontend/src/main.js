@@ -274,6 +274,7 @@ sidebar.setOnBlend(async (items) => {
       settings,
       choice.method,
       choice.target_vol,
+      choice.orthogonalize,
     );
     renderResponse(resp);
     // Use the *computed* weights from the response so the editor's preview
@@ -284,7 +285,11 @@ sidebar.setOnBlend(async (items) => {
     );
     editor.setSaveEnabled(true);
     const methodLabel = resp.settings?.weight_method || choice.method;
-    toast(`Blended ${items.length} alphas (${methodLabel})`, 'success', { duration: 2500 });
+    const effN = resp.settings?.effective_n;
+    const msg = (resp.settings?.orthogonalize && typeof effN === 'number' && effN < items.length)
+      ? `Blended ${effN}/${items.length} alphas (${methodLabel}) · ${items.length - effN} redundant dropped`
+      : `Blended ${items.length} alphas (${methodLabel})`;
+    toast(msg, 'success', { duration: 3000 });
   } catch (e) {
     toast(e.message, 'error', { title: 'Multi-blend failed' });
   }
@@ -303,6 +308,7 @@ function openWeightMethodPicker() {
       <p class="confirm-message">How should we weight the selected alphas?</p>
       <div class="weight-method-options">
         <label><input type="radio" name="wm" value="equal" checked /> <strong>Equal</strong> — use the weights from the sidebar inputs</label>
+        <label><input type="radio" name="wm" value="ic_weighted" /> <strong>IC-weighted</strong> — weight by each alpha's Information Coefficient (negative-IC alphas dropped)</label>
         <label><input type="radio" name="wm" value="inverse_variance" /> <strong>Inverse-variance</strong> — robust, ignores correlations</label>
         <label><input type="radio" name="wm" value="mv_optimal" /> <strong>Mean-variance optimal</strong> — closed-form Σ⁻¹μ; may produce shorts</label>
         <label><input type="radio" name="wm" value="risk_parity" /> <strong>Risk parity</strong> — equal vol contribution per alpha</label>
@@ -310,6 +316,10 @@ function openWeightMethodPicker() {
       <label class="weight-target-vol" style="display:none;">
         Target annualized vol (optional, mv_optimal only):
         <input type="number" step="0.01" min="0" placeholder="e.g. 0.15" data-role="target-vol" />
+      </label>
+      <label class="weight-orthogonalize" style="display:flex; align-items:flex-start; gap:8px; margin-top:12px; font-size:13px;">
+        <input type="checkbox" data-role="orthogonalize" style="margin-top:3px;" />
+        <span><strong>Drop redundant alphas first</strong> — prune any whose return-correlation exceeds 0.7 to an already-kept, higher-IC alpha, so near-duplicates don't dominate the blend.</span>
       </label>
       <div class="modal-actions">
         <button type="button" data-role="cancel">Cancel</button>
@@ -341,7 +351,8 @@ function openWeightMethodPicker() {
       const method = modal.querySelector('input[name="wm"]:checked')?.value || 'equal';
       const tvRaw = targetVolInput.value.trim();
       const target_vol = method === 'mv_optimal' && tvRaw !== '' ? Number(tvRaw) : null;
-      close({ method, target_vol });
+      const orthogonalize = modal.querySelector('[data-role="orthogonalize"]').checked;
+      close({ method, target_vol, orthogonalize });
     });
   });
 }
