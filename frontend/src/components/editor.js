@@ -658,7 +658,15 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
         setStatus('invalid', '✗ ' + (res.error || 'invalid'), diags);
       }
     } catch (e) {
-      setStatus('invalid', '✗ ' + e.message, []);
+      // A 503 means the backend is still downloading market data on a fresh
+      // deploy. Show a soft "waiting" status rather than a stuck raw HTTP
+      // error — the app-level readiness poller calls revalidate() once data
+      // is ready, which re-runs this and replaces the message.
+      if (/HTTP 503/.test(e.message || '')) {
+        setStatus('checking', '⏳ waiting for market data…', []);
+      } else {
+        setStatus('invalid', '✗ ' + e.message, []);
+      }
     }
   }
 
@@ -850,5 +858,8 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     setOnLoadExample: (cb) => { onLoadExample = cb; },
     setSaveEnabled,
     setRunning,
+    // Re-run validation on demand (e.g. after market data finishes loading, to
+    // clear a stuck "waiting for market data" status).
+    revalidate: () => runValidate(),
   };
 }

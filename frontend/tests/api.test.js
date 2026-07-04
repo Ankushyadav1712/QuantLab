@@ -95,6 +95,15 @@ describe('api', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(`${BASE_URL}/api/alphas?tag=momentum`);
   });
 
+  it('getLoadingStatus is a GET to /api/loading_status with no auth', async () => {
+    setApiToken('secret-xyz');
+    await api.getLoadingStatus();
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE_URL}/api/loading_status`);
+    expect(opts.method).toBe('GET');
+    expect(opts.headers.Authorization).toBeUndefined();
+  });
+
   it('getAlphaVersions + rollbackAlpha hit the right paths', async () => {
     await api.getAlphaVersions(5);
     expect(fetchMock.mock.calls[0][0]).toBe(`${BASE_URL}/api/alphas/5/versions`);

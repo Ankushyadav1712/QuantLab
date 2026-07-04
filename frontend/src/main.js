@@ -74,6 +74,11 @@ const researchCharts = createResearchCharts(document.getElementById('research-ch
 
 let lastResponse = null;
 
+// Flipped true once the backend reports market data is loaded (see the
+// readiness poller at the bottom of this file). Gates the Run button so a
+// fresh-deploy click doesn't hit a confusing 503.
+let dataReady = false;
+
 // Session trial tracking — feeds into the Deflated Sharpe Ratio.  We count the
 // number of *distinct* expressions the user has run, since re-running the same
 // expression doesn't add a new selection-bias trial.  Persisted in localStorage
@@ -97,6 +102,10 @@ function recordExpressionTrial(expression) {
 // ---------- Run / save ----------
 
 editor.setOnRun(async () => {
+  if (!dataReady) {
+    toast('Still downloading market data — please wait a moment.', 'warning');
+    return;
+  }
   const expression = editor.getExpression();
   if (!expression) {
     toast('Enter an expression first.', 'warning');
@@ -418,6 +427,74 @@ batchComparison.setOnSelectAlpha(async (id) => {
 
 sidebar.refresh();
 portfolioAnalysis.refresh();
+
+// ---------- Market-data readiness ----------
+// On a fresh deploy the backend downloads the price/fundamentals universe in
+// the background; until it's done, the write endpoints (validate, simulate, …)
+// return 503. Poll /api/loading_status so we can (a) show a self-clearing
+// "downloading data" banner, (b) gate the Run button, and (c) re-validate the
+// editor once data lands — otherwise a 503 validation error stays stuck in the
+// editor status forever, since validation only re-runs on the next keystroke.
+function ensureLoadingBanner() {
+  let el = document.getElementById('loading-banner');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'loading-banner';
+  el.setAttribute('role', 'status');
+  el.style.cssText = [
+    'display:flex', 'align-items:center', 'gap:10px',
+    'padding:10px 14px', 'margin-bottom:12px', 'border-radius:8px',
+    'background:var(--bg-tertiary,#1a2840)',
+    'border:1px solid var(--border,#2a3a55)',
+    'color:var(--text-secondary,#9fb3c8)',
+    'font-size:13px',
+  ].join(';');
+  el.innerHTML = '<span class="spinner"></span><span class="loading-banner-text">Preparing market data…</span>';
+  const main = document.querySelector('main.main');
+  if (main) main.insertBefore(el, main.firstChild);
+  else document.body.appendChild(el);
+  return el;
+}
+function showLoadingBanner(progress) {
+  const el = ensureLoadingBanner();
+  const textEl = el.querySelector('.loading-banner-text');
+  const pct = progress && typeof progress.pct === 'number' ? progress.pct : 0;
+  const phase = (progress && progress.phase) || '';
+  textEl.textContent = pct > 0
+    ? `Downloading financial data… ${pct}%${phase ? ` · ${phase}` : ''}`
+    : 'Preparing market data…';
+}
+function hideLoadingBanner() {
+  const el = document.getElementById('loading-banner');
+  if (el) el.remove();
+}
+
+let sawLoading = false;
+async function pollLoadingStatus() {
+  let status;
+  try {
+    status = await api.getLoadingStatus();
+  } catch (_) {
+    // Backend unreachable (still booting?). Retry at a slower cadence.
+    setTimeout(pollLoadingStatus, 3000);
+    return;
+  }
+  if (status.ready) {
+    dataReady = true;
+    if (sawLoading) {
+      hideLoadingBanner();
+      editor.revalidate(); // clears a stuck "waiting for market data" status
+      toast('Market data ready — you can run backtests now.', 'success', { duration: 3000 });
+    }
+    return; // done; stop polling
+  }
+  dataReady = false;
+  sawLoading = true;
+  showLoadingBanner(status.progress);
+  setTimeout(pollLoadingStatus, 2000);
+}
+pollLoadingStatus();
+
 // Refresh the Pareto chart whenever the saved-alphas list mutates.
 sidebar.setOnHistory(async (id) => {
   await openVersionDrawer(id);
