@@ -68,6 +68,7 @@ from engine.lint import lint_ast
 from engine.parser import BinaryOp, DataField, FunctionCall, Parser, UnaryOp
 from engine.sweep import combo_for_index, expand_sweeps
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from models.schemas import (
@@ -2440,22 +2441,27 @@ def multi_blend(request: Request, req: MultiAlphaRequest):
     return response
 
 
-@app.post("/api/alphas", dependencies=[Depends(require_api_token)])
-async def save_alpha(req: AlphaSaveRequest):
-    if not _state.get("ready", False):
-        raise HTTPException(
-            status_code=503, detail="System is downloading financial data. Please wait a moment."
-        )
-    alpha = _evaluate(req.expression)
-    cfg = _make_config(req.settings)
-    _, gics_map, universe_id = _resolve_universe(req.settings or {})
-    response = _build_response(
-        req.expression, alpha, cfg, gics_map=gics_map, universe_id=universe_id
-    )
+def _prepare_alpha_save(
+    expression: str, settings: dict | None
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """CPU-heavy half of save_alpha: run the backtest, build the response +
+    provenance, and serialize the JSON payload.
+
+    Kept a *sync* helper so `save_alpha` can hand it to `run_in_threadpool`.
+    `save_alpha` has to be `async def` (it awaits the aiosqlite writes), which
+    means any blocking work in its body runs directly on the event loop. A
+    multi-second backtest there starves the single-worker `/health` check on
+    Render's free tier, which then recycles the worker mid-request → a 502 with
+    an empty body. Offloading to the threadpool keeps the loop free, matching
+    how the sync backtest endpoints (simulate, sweep, …) already behave.
+    """
+    alpha = _evaluate(expression)
+    cfg = _make_config(settings)
+    _, gics_map, universe_id = _resolve_universe(settings or {})
+    response = _build_response(expression, alpha, cfg, gics_map=gics_map, universe_id=universe_id)
     # The IS/OOS refactor split `metrics` into `is_metrics` + `oos_metrics`;
     # the persisted summary columns track the IS half (the always-present one).
     metrics = response["is_metrics"]
-    created_at = datetime.now(timezone.utc).isoformat()
 
     # Provenance: bind the saved alpha to the exact code + data state that
     # produced these numbers.  If the user re-runs this alpha six months
@@ -2471,6 +2477,21 @@ async def save_alpha(req: AlphaSaveRequest):
     response["provenance"] = provenance
 
     payload = json.dumps(response, default=str)
+    return metrics, provenance, payload
+
+
+@app.post("/api/alphas", dependencies=[Depends(require_api_token)])
+async def save_alpha(req: AlphaSaveRequest):
+    if not _state.get("ready", False):
+        raise HTTPException(
+            status_code=503, detail="System is downloading financial data. Please wait a moment."
+        )
+    # Run the backtest + serialization off the event loop so the single-worker
+    # health check stays responsive on Render (see _prepare_alpha_save docstring).
+    metrics, provenance, payload = await run_in_threadpool(
+        _prepare_alpha_save, req.expression, req.settings
+    )
+    created_at = datetime.now(timezone.utc).isoformat()
 
     async with connect() as db:
         # Name-based versioning: saving under an existing name creates the next
