@@ -46,10 +46,14 @@ export const api = {
     request('POST', '/api/simulate', { expression, settings, n_trials }),
   validateExpression: (expression) =>
     request('POST', '/api/validate', { expression }),
-  saveAlpha: (name, expression, notes = '', settings = {}) =>
-    request('POST', '/api/alphas', { name, expression, notes, settings }, { auth: true }),
-  listAlphas: () => request('GET', '/api/alphas'),
+  saveAlpha: (name, expression, notes = '', settings = {}, tags = []) =>
+    request('POST', '/api/alphas', { name, expression, notes, settings, tags }, { auth: true }),
+  listAlphas: (tag = null) =>
+    request('GET', tag ? `/api/alphas?tag=${encodeURIComponent(tag)}` : '/api/alphas'),
   getAlpha: (id) => request('GET', `/api/alphas/${id}`),
+  getAlphaVersions: (id) => request('GET', `/api/alphas/${id}/versions`),
+  rollbackAlpha: (id, version) =>
+    request('POST', `/api/alphas/${id}/rollback/${version}`, undefined, { auth: true }),
   deleteAlpha: (id) => request('DELETE', `/api/alphas/${id}`, undefined, { auth: true }),
   multiBlend: (alphas, settings = {}, weight_method = 'equal', target_vol = null, orthogonalize = false) =>
     request('POST', '/api/alphas/multi-blend', {

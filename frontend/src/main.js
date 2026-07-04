@@ -419,6 +419,10 @@ batchComparison.setOnSelectAlpha(async (id) => {
 sidebar.refresh();
 portfolioAnalysis.refresh();
 // Refresh the Pareto chart whenever the saved-alphas list mutates.
+sidebar.setOnHistory(async (id) => {
+  await openVersionDrawer(id);
+});
+
 sidebar.setOnDelete(() => portfolioAnalysis.refresh());
 
 // Selecting an alpha on the Pareto chart loads it into the editor — same
@@ -862,8 +866,12 @@ function openSaveModal(response) {
         <label>Notes</label>
         <textarea data-role="notes" rows="3" placeholder="Optional"></textarea>
       </div>
+      <div class="row">
+        <label>Tags</label>
+        <input type="text" data-role="tags" placeholder="comma-separated, e.g. momentum, wip" />
+      </div>
       <div class="row" style="font-size:12px; color:var(--text-secondary);">
-        Will be saved with the latest backtest results.
+        Re-saving under an existing name creates a new version. Saved with the latest backtest results.
       </div>
     `,
     [
@@ -874,6 +882,10 @@ function openSaveModal(response) {
         action: async (modal) => {
           const name = modal.querySelector('[data-role="name"]').value.trim();
           const notes = modal.querySelector('[data-role="notes"]').value.trim();
+          const tags = modal.querySelector('[data-role="tags"]').value
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean);
           if (!name) {
             toast('Name is required.', 'warning');
             return;
@@ -883,7 +895,8 @@ function openSaveModal(response) {
               name,
               response.expression,
               notes,
-              response.settings || {}
+              response.settings || {},
+              tags
             );
             closeModal();
             await sidebar.refresh();
@@ -897,6 +910,63 @@ function openSaveModal(response) {
       },
     ]
   );
+}
+
+// ---------- Version history drawer ----------
+// Lists a saved alpha's version lineage (newest first) with each version's
+// expression + Sharpe, and lets the user restore an older version — which the
+// backend appends as a new current version (non-destructive).
+async function openVersionDrawer(id) {
+  let payload;
+  try {
+    payload = await api.getAlphaVersions(id);
+  } catch (e) {
+    toast(e.message, 'error', { title: 'Could not load history' });
+    return;
+  }
+  const versions = (payload.versions || []).slice().reverse(); // newest first
+  if (versions.length === 0) {
+    toast('No version history.', 'warning');
+    return;
+  }
+  const headVersion = Math.max(...versions.map((v) => v.version));
+  const rows = versions.map((v) => {
+    const isHead = v.version === headVersion;
+    const sharpe = v.sharpe == null ? '—' : Number(v.sharpe).toFixed(2);
+    const when = (v.created_at || '').slice(0, 10);
+    const action = isHead
+      ? '<span style="font-size:11px; color:var(--accent-green,#2ec8a4);">current</span>'
+      : `<button type="button" class="ghost" data-rollback="${v.version}">restore</button>`;
+    return `
+      <div style="border-bottom:1px solid var(--border,#1a2840); padding:8px 0;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+          <strong style="font-family:var(--mono,monospace);">v${v.version}</strong>
+          <span style="font-size:12px; color:var(--text-secondary);">Sharpe ${sharpe} · ${when}</span>
+          ${action}
+        </div>
+        <code style="display:block; font-size:11px; color:var(--text-secondary); margin-top:4px; word-break:break-all;">${escapeHtml(v.expression)}</code>
+      </div>
+    `;
+  }).join('');
+  showModal(
+    `Version history — ${escapeHtml(payload.name)}`,
+    `<p class="modal-sub">Each save under this name is a version. Restore re-applies an older version as a new current version (non-destructive).</p>${rows}`,
+    [{ label: 'Close', primary: true, action: closeModal }]
+  );
+  document.querySelectorAll('[data-rollback]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const version = Number(btn.dataset.rollback);
+      try {
+        await api.rollbackAlpha(id, version);
+        closeModal();
+        await sidebar.refresh();
+        portfolioAnalysis.refresh();
+        toast(`Restored v${version} as the current version`, 'success', { duration: 2500 });
+      } catch (e) {
+        toast(e.message, 'error', { title: 'Rollback failed' });
+      }
+    });
+  });
 }
 
 // ---------- Modal helper ----------

@@ -17,7 +17,10 @@ CREATE TABLE IF NOT EXISTS alphas (
     result_json   TEXT,
     code_signature TEXT,
     data_signature TEXT,
-    git_hash      TEXT
+    git_hash      TEXT,
+    tags          TEXT    DEFAULT '',
+    version       INTEGER DEFAULT 1,
+    parent_id     INTEGER
 );
 """
 
@@ -29,6 +32,9 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("code_signature", "ALTER TABLE alphas ADD COLUMN code_signature TEXT"),
     ("data_signature", "ALTER TABLE alphas ADD COLUMN data_signature TEXT"),
     ("git_hash", "ALTER TABLE alphas ADD COLUMN git_hash TEXT"),
+    ("tags", "ALTER TABLE alphas ADD COLUMN tags TEXT DEFAULT ''"),
+    ("version", "ALTER TABLE alphas ADD COLUMN version INTEGER DEFAULT 1"),
+    ("parent_id", "ALTER TABLE alphas ADD COLUMN parent_id INTEGER"),
 )
 
 

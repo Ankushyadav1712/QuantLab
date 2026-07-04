@@ -82,4 +82,25 @@ describe('api', () => {
     expect(body.weight_method).toBe('equal');
     expect(body.orthogonalize).toBe(false);
   });
+
+  it('saveAlpha includes tags in the body', async () => {
+    setApiToken('secret-xyz');
+    await api.saveAlpha('m', 'rank(close)', 'notes', {}, ['momentum', 'wip']);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.tags).toEqual(['momentum', 'wip']);
+  });
+
+  it('listAlphas appends the tag query param when given', async () => {
+    await api.listAlphas('momentum');
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE_URL}/api/alphas?tag=momentum`);
+  });
+
+  it('getAlphaVersions + rollbackAlpha hit the right paths', async () => {
+    await api.getAlphaVersions(5);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE_URL}/api/alphas/5/versions`);
+    await api.rollbackAlpha(5, 2);
+    const [url, opts] = fetchMock.mock.calls[1];
+    expect(url).toBe(`${BASE_URL}/api/alphas/5/rollback/2`);
+    expect(opts.method).toBe('POST');
+  });
 });

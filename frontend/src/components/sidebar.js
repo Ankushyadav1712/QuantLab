@@ -10,6 +10,7 @@ export function createSidebar(container) {
   container.classList.add('sidebar');
   container.innerHTML = `
     <h3>Saved Alphas</h3>
+    <input type="text" data-role="tag-filter" placeholder="filter by tag…" class="tag-filter-input" style="width:100%; margin-bottom:8px; padding:4px 8px; font-size:12px;" />
     <div data-role="list" style="display:flex; flex-direction:column; gap:8px;">
       <div class="placeholder">No saved alphas yet.</div>
     </div>
@@ -26,14 +27,21 @@ export function createSidebar(container) {
   const compareBtn = container.querySelector('[data-role="compare"]');
   const corrBtn = container.querySelector('[data-role="correlate"]');
   const batchBtn = container.querySelector('[data-role="batch"]');
+  const tagFilterInput = container.querySelector('[data-role="tag-filter"]');
 
   let alphas = [];
   let selected = new Set();
   let weights = {}; // id -> number
+  let tagFilter = '';
   const callbacks = {
     onLoad: null, onDelete: null, onBlend: null,
-    onCompare: null, onCorrelate: null, onBatch: null,
+    onCompare: null, onCorrelate: null, onBatch: null, onHistory: null,
   };
+
+  tagFilterInput.addEventListener('input', () => {
+    tagFilter = tagFilterInput.value.trim();
+    render();
+  });
 
   blendBtn.addEventListener('click', () => {
     if (callbacks.onBlend) callbacks.onBlend(getSelectedItems());
@@ -86,7 +94,15 @@ export function createSidebar(container) {
       updateActionState();
       return;
     }
-    for (const a of alphas) {
+    const shown = tagFilter
+      ? alphas.filter((a) => (a.tags || []).includes(tagFilter))
+      : alphas;
+    if (shown.length === 0) {
+      listEl.innerHTML = `<div class="placeholder">No alphas tagged "${escapeHtml(tagFilter)}".</div>`;
+      updateActionState();
+      return;
+    }
+    for (const a of shown) {
       listEl.appendChild(renderItem(a));
     }
     updateActionState();
@@ -125,18 +141,35 @@ export function createSidebar(container) {
       ? `<div class="alpha-item-prov">${provBadges.join(' ')}</div>`
       : '';
 
+    // Versioning: badge the head with its version when a lineage exists, and
+    // offer a history button. Tags render as clickable filter chips.
+    const versionCount = a.version_count || 1;
+    const verBadge = versionCount > 1
+      ? `<span class="version-badge" title="${versionCount} versions" style="font-size:10px; color:var(--text-secondary); font-family:var(--mono,monospace);">v${a.version}</span>`
+      : '';
+    const historyBtn = versionCount > 1
+      ? '<button type="button" class="ghost" data-role="history" title="Version history">history</button>'
+      : '';
+    const tags = a.tags || [];
+    const tagsRow = tags.length
+      ? `<div class="alpha-item-tags" style="display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;">${tags.map((t) => `<span class="tag-chip" data-tag="${escapeHtml(t)}" title="Filter by ${escapeHtml(t)}" style="cursor:pointer; font-size:10px; padding:1px 6px; border-radius:8px; background:var(--bg-tertiary,#1a2840); color:var(--text-secondary);">${escapeHtml(t)}</span>`).join('')}</div>`
+      : '';
+
     item.innerHTML = `
       <div class="alpha-item-head">
         <input type="checkbox" data-role="check" ${checked ? 'checked' : ''} />
         <span class="alpha-item-name" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>
+        ${verBadge}
         <span class="sharpe-badge ${sharpeCls}">${sharpeStr}</span>
       </div>
       <div class="alpha-item-expr code" title="${escapeHtml(a.expression)}">${escapeHtml(exprText)}</div>
+      ${tagsRow}
       ${provRow}
       <div class="alpha-item-row2">
         <label style="font-size:11px; color:var(--text-secondary);">w</label>
         <input type="number" class="alpha-item-weight" step="0.1" value="${w}" data-role="weight" />
         <div class="alpha-item-actions">
+          ${historyBtn}
           <button type="button" class="ghost" data-role="load">load</button>
           <button type="button" class="ghost danger" data-role="delete">×</button>
         </div>
@@ -147,6 +180,21 @@ export function createSidebar(container) {
     const weightInput = item.querySelector('[data-role="weight"]');
     const loadBtn = item.querySelector('[data-role="load"]');
     const delBtn = item.querySelector('[data-role="delete"]');
+    const historyBtnEl = item.querySelector('[data-role="history"]');
+    if (historyBtnEl) {
+      historyBtnEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (callbacks.onHistory) callbacks.onHistory(a.id);
+      });
+    }
+    item.querySelectorAll('.tag-chip').forEach((chip) => {
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tagFilter = chip.dataset.tag;
+        tagFilterInput.value = tagFilter;
+        render();
+      });
+    });
 
     check.addEventListener('change', () => {
       if (check.checked) selected.add(a.id);
@@ -210,5 +258,6 @@ export function createSidebar(container) {
     setOnCompare: (cb) => { callbacks.onCompare = cb; },
     setOnCorrelate: (cb) => { callbacks.onCorrelate = cb; },
     setOnBatchCompare: (cb) => { callbacks.onBatch = cb; },
+    setOnHistory: (cb) => { callbacks.onHistory = cb; },
   };
 }

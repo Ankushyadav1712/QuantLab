@@ -2473,13 +2473,30 @@ async def save_alpha(req: AlphaSaveRequest):
     payload = json.dumps(response, default=str)
 
     async with connect() as db:
+        # Name-based versioning: saving under an existing name creates the next
+        # version in that lineage (parent = the current head) rather than a
+        # detached row — so the library keeps an audit trail of how an alpha
+        # evolved instead of scattering near-duplicates.
+        db.row_factory = __import__("aiosqlite").Row
+        head_cur = await db.execute(
+            "SELECT id, version FROM alphas WHERE name = ? ORDER BY version DESC, id DESC LIMIT 1",
+            (req.name,),
+        )
+        head = await head_cur.fetchone()
+        if head is not None:
+            version = int(head["version"] or 1) + 1
+            parent_id = int(head["id"])
+        else:
+            version = 1
+            parent_id = None
+
         cursor = await db.execute(
             """
             INSERT INTO alphas
                 (name, expression, notes, sharpe, annual_return, max_drawdown,
                  turnover, fitness, created_at, result_json,
-                 code_signature, data_signature, git_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 code_signature, data_signature, git_hash, tags, version, parent_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 req.name,
@@ -2495,6 +2512,9 @@ async def save_alpha(req: AlphaSaveRequest):
                 provenance.get("code_signature"),
                 provenance.get("data_signature"),
                 provenance.get("git_hash"),
+                json.dumps(req.tags),
+                version,
+                parent_id,
             ),
         )
         await db.commit()
@@ -2509,6 +2529,7 @@ async def save_alpha(req: AlphaSaveRequest):
             "alpha_name": req.name,
             "expression": req.expression,
             "sharpe": metrics.get("sharpe"),
+            "version": version,
         },
     )
     return {
@@ -2518,24 +2539,43 @@ async def save_alpha(req: AlphaSaveRequest):
         "notes": req.notes,
         "sharpe": metrics.get("sharpe"),
         "created_at": created_at,
+        "version": version,
+        "tags": req.tags,
     }
 
 
 @app.get("/api/alphas")
-async def list_alphas():
+async def list_alphas(tag: str | None = None):
+    # Show only the head (latest version) of each named lineage, so the library
+    # lists one row per alpha rather than every historical version. version_count
+    # lets the UI badge how many versions sit behind the head. Optional ?tag=
+    # filters to heads carrying that tag.
     async with connect() as db:
         db.row_factory = __import__("aiosqlite").Row
         cursor = await db.execute(
             """
             SELECT id, name, expression, notes, sharpe, annual_return,
                    max_drawdown, turnover, fitness, created_at,
-                   code_signature, data_signature, git_hash
-            FROM alphas
-            ORDER BY id DESC
+                   code_signature, data_signature, git_hash, tags, version, parent_id,
+                   (SELECT COUNT(*) FROM alphas b WHERE b.name = a.name) AS version_count
+            FROM alphas a
+            WHERE a.id = (SELECT MAX(c.id) FROM alphas c WHERE c.name = a.name)
+            ORDER BY a.id DESC
             """
         )
         rows = await cursor.fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        rec = dict(r)
+        raw_tags = rec.get("tags")
+        try:
+            rec["tags"] = json.loads(raw_tags) if raw_tags else []
+        except (json.JSONDecodeError, TypeError):
+            rec["tags"] = []
+        out.append(rec)
+    if tag:
+        out = [rec for rec in out if tag in rec["tags"]]
+    return out
 
 
 @app.get("/api/alphas/diversification_curve")
@@ -2613,7 +2653,116 @@ async def get_alpha(alpha_id: int):
             record["result"] = None
     else:
         record["result"] = None
+    raw_tags = record.get("tags")
+    try:
+        record["tags"] = json.loads(raw_tags) if raw_tags else []
+    except (json.JSONDecodeError, TypeError):
+        record["tags"] = []
     return record
+
+
+@app.get("/api/alphas/{alpha_id}/versions")
+async def alpha_versions(alpha_id: int):
+    """Full version lineage for an alpha, oldest → newest.
+
+    Versions share a name; each save under that name appends one. The UI uses
+    this for the history drawer (diff between versions + rollback).
+    """
+    async with connect() as db:
+        db.row_factory = __import__("aiosqlite").Row
+        name_cur = await db.execute("SELECT name FROM alphas WHERE id = ?", (alpha_id,))
+        name_row = await name_cur.fetchone()
+        if name_row is None:
+            raise HTTPException(status_code=404, detail="Alpha not found")
+        name = name_row["name"]
+        cursor = await db.execute(
+            """
+            SELECT id, name, expression, notes, sharpe, created_at, version, parent_id
+            FROM alphas WHERE name = ? ORDER BY version ASC, id ASC
+            """,
+            (name,),
+        )
+        rows = await cursor.fetchall()
+    return {"name": name, "versions": [dict(r) for r in rows]}
+
+
+@app.post(
+    "/api/alphas/{alpha_id}/rollback/{version}",
+    dependencies=[Depends(require_api_token)],
+)
+async def rollback_alpha(alpha_id: int, version: int):
+    """Restore an earlier version by appending a copy of it as a new head.
+
+    Non-destructive: newer versions stay in the history; rollback just makes the
+    chosen version current again, re-using its stored result (no re-backtest).
+    """
+    async with connect() as db:
+        db.row_factory = __import__("aiosqlite").Row
+        name_cur = await db.execute("SELECT name FROM alphas WHERE id = ?", (alpha_id,))
+        name_row = await name_cur.fetchone()
+        if name_row is None:
+            raise HTTPException(status_code=404, detail="Alpha not found")
+        name = name_row["name"]
+
+        target_cur = await db.execute(
+            "SELECT * FROM alphas WHERE name = ? AND version = ?", (name, version)
+        )
+        target = await target_cur.fetchone()
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"Version {version} not found for {name!r}")
+
+        head_cur = await db.execute(
+            "SELECT id, version FROM alphas WHERE name = ? ORDER BY version DESC, id DESC LIMIT 1",
+            (name,),
+        )
+        head = await head_cur.fetchone()
+        if head is None:  # unreachable (target exists ⇒ lineage non-empty), but narrows for mypy
+            raise HTTPException(status_code=404, detail="Alpha not found")
+        new_version = int(head["version"] or 1) + 1
+        parent_id = int(head["id"])
+
+        t = dict(target)
+        created_at = datetime.now(timezone.utc).isoformat()
+        cursor = await db.execute(
+            """
+            INSERT INTO alphas
+                (name, expression, notes, sharpe, annual_return, max_drawdown,
+                 turnover, fitness, created_at, result_json,
+                 code_signature, data_signature, git_hash, tags, version, parent_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                t["name"],
+                t["expression"],
+                t["notes"],
+                t["sharpe"],
+                t["annual_return"],
+                t["max_drawdown"],
+                t["turnover"],
+                t["fitness"],
+                created_at,
+                t["result_json"],
+                t["code_signature"],
+                t["data_signature"],
+                t["git_hash"],
+                t["tags"],
+                new_version,
+                parent_id,
+            ),
+        )
+        await db.commit()
+        new_id = cursor.lastrowid
+
+    log.info(
+        "alpha.rolledback",
+        extra={"alpha_id": alpha_id, "alpha_name": name, "restored_version": version},
+    )
+    return {
+        "id": new_id,
+        "name": name,
+        "restored_from_version": version,
+        "version": new_version,
+    }
 
 
 @app.delete("/api/alphas/{alpha_id}", dependencies=[Depends(require_api_token)])
