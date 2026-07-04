@@ -43,6 +43,8 @@ class AlphaSaveRequest(BaseModel):
     name: str
     notes: str = ""
     settings: dict[str, Any] | None = None
+    # Free-form labels for filtering the library (e.g. ["momentum", "wip"]).
+    tags: list[str] = Field(default_factory=list)
 
 
 class AlphaRecord(BaseModel):
