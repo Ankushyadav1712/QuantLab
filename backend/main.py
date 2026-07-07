@@ -27,6 +27,7 @@ from analytics.ic_metrics import compute_ic_summary
 from analytics.pareto import compute_pareto
 from analytics.performance import PerformanceAnalytics, _safe_float, _safe_list
 from analytics.provenance import build_provenance, compute_code_signature, compute_git_hash
+from analytics.validation import validate_correlation
 from config import (
     ALLOWED_ORIGINS,
     DATA_END,
@@ -81,6 +82,7 @@ from models.schemas import (
     MultiAlphaRequest,
     SimulationRequest,
     SweepRequest,
+    ValidateCorrelationRequest,
     ValidateRequest,
 )
 from slowapi import Limiter
@@ -2856,6 +2858,25 @@ async def delete_alpha(alpha_id: int):
             raise HTTPException(status_code=404, detail="Alpha not found")
     log.info("alpha.deleted", extra={"alpha_id": alpha_id})
     return {"deleted": alpha_id}
+
+
+@app.post("/api/validate_correlation")
+@limiter.limit(_LIMIT_SIMULATE)
+def validate_correlation_endpoint(request: Request, req: ValidateCorrelationRequest):
+    """Brain validator: correlate a local backtest's daily returns with an
+    external series (e.g. a WorldQuant Brain PnL export) and report the
+    annualised-Sharpe gap on the overlapping dates.
+
+    Lightweight (no backtest) — deliberately NOT behind the backtest gate.
+    """
+    del request  # required-by-name for slowapi
+    return validate_correlation(
+        req.local.dates,
+        req.local.returns,
+        req.external.dates,
+        req.external.returns,
+        sharpe_tolerance_pct=req.sharpe_tolerance_pct,
+    )
 
 
 @app.post("/api/alphas/correlations")

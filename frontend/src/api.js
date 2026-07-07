@@ -67,6 +67,8 @@ export const api = {
     request('POST', '/api/sweep', { expression, settings, max_combinations }),
   getCorrelations: (ids) =>
     request('POST', '/api/alphas/correlations', { alpha_ids: ids }),
+  validateCorrelation: (local, external, sharpe_tolerance_pct = 3.0) =>
+    request('POST', '/api/validate_correlation', { local, external, sharpe_tolerance_pct }),
   getParetoAlphas: () => request('GET', '/api/alphas/pareto'),
   getDiversificationCurve: (samples = 20) =>
     request('GET', `/api/alphas/diversification_curve?samples=${samples}`),

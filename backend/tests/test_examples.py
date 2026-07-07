@@ -80,6 +80,50 @@ def test_every_example_lints_clean():
         assert not errors, f"Example {e['id']} has lint errors: {errors}"
 
 
+def test_catalog_has_at_least_20_examples():
+    """The cookbook is an onboarding asset — keep a broad starter set."""
+    assert len(EXAMPLE_ALPHAS) >= 20
+
+
+def test_every_example_uses_known_fields():
+    """Close the gap the linter leaves: lint_ast treats a DataField as a leaf and
+    never checks the name exists, so an example could reference a field that only
+    fails at eval time. Assert every referenced field is one the loader actually
+    produces — price/volume/derived + fundamentals + macro + GICS grouping levels."""
+    from data.fetcher import ALL_FIELDS
+    from data.fundamentals import ALL_FUNDAMENTAL_FIELDS
+    from data.macro import ALL_MACRO_FIELDS
+    from data.universes import GICS_LEVELS
+    from engine.parser import BinaryOp, DataField, FunctionCall, UnaryOp
+
+    known = (
+        set(ALL_FIELDS)
+        | set(ALL_FUNDAMENTAL_FIELDS)
+        | set(ALL_MACRO_FIELDS)
+        | set(GICS_LEVELS)
+        | {"market_cap"}  # size proxy injected at load time
+    )
+
+    def collect(node, acc):
+        if isinstance(node, DataField):
+            acc.add(node.name)
+        elif isinstance(node, FunctionCall):
+            for arg in node.args:
+                collect(arg, acc)
+        elif isinstance(node, BinaryOp):
+            collect(node.left, acc)
+            collect(node.right, acc)
+        elif isinstance(node, UnaryOp):
+            collect(node.operand, acc)
+        return acc
+
+    parser = Parser()
+    for e in EXAMPLE_ALPHAS:
+        used = collect(parser.parse(e["expression"]), set())
+        unknown = used - known
+        assert not unknown, f"Example {e['id']} references unknown field(s): {unknown}"
+
+
 # ---------- Helpers ----------
 
 

@@ -112,4 +112,23 @@ describe('api', () => {
     expect(url).toBe(`${BASE_URL}/api/alphas/5/rollback/2`);
     expect(opts.method).toBe('POST');
   });
+
+  it('validateCorrelation posts local + external + tolerance', async () => {
+    const local = { dates: ['2020-01-01'], returns: [0.01] };
+    const external = { dates: ['2020-01-01'], returns: [0.02] };
+    await api.validateCorrelation(local, external, 5);
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE_URL}/api/validate_correlation`);
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body);
+    expect(body.local).toEqual(local);
+    expect(body.external).toEqual(external);
+    expect(body.sharpe_tolerance_pct).toBe(5);
+  });
+
+  it('validateCorrelation defaults the tolerance to 3', async () => {
+    await api.validateCorrelation({ dates: [], returns: [] }, { dates: [], returns: [] });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.sharpe_tolerance_pct).toBe(3);
+  });
 });
