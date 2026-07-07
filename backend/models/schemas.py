@@ -124,3 +124,21 @@ class BatchSimulationRequest(BaseModel):
         description="Up to 50 items, each {id?: str, expression: str}.",
     )
     settings: dict[str, Any] | None = None
+
+
+class ReturnSeries(BaseModel):
+    """A date-aligned daily return (or PnL) series: dates[i] pairs with returns[i]."""
+
+    dates: list[str] = Field(default_factory=list)
+    returns: list[float | None] = Field(default_factory=list)
+
+
+class ValidateCorrelationRequest(BaseModel):
+    """Compare a local backtest's returns against an external series (e.g. a
+    WorldQuant Brain PnL export) to check the local backtester is a faithful
+    proxy: return correlation + annualised-Sharpe gap on the overlapping dates.
+    """
+
+    local: ReturnSeries
+    external: ReturnSeries
+    sharpe_tolerance_pct: float = Field(default=3.0, ge=0.0, le=100.0)

@@ -81,6 +81,7 @@ export function createDashboard(container) {
     <div data-role="metrics-grid" class="dashboard"></div>
     <div data-role="signal-quality" class="signal-quality-section glass" style="display:none;"></div>
     <div data-role="exposure" class="exposure-section glass" style="display:none;"></div>
+    <div data-role="size-tilt" class="exposure-section glass" style="display:none;"></div>
     <div data-role="stress-test" class="stress-section glass" style="display:none;"></div>
     <div data-role="deflated" class="deflated-section glass" style="display:none;"></div>
     <div data-role="is-oos" class="is-oos-section glass" style="display:none;"></div>
@@ -93,6 +94,7 @@ export function createDashboard(container) {
   const metricsGrid = container.querySelector('[data-role="metrics-grid"]');
   const signalQualityEl = container.querySelector('[data-role="signal-quality"]');
   const exposureEl = container.querySelector('[data-role="exposure"]');
+  const sizeTiltEl = container.querySelector('[data-role="size-tilt"]');
   const stressEl = container.querySelector('[data-role="stress-test"]');
   const deflatedEl = container.querySelector('[data-role="deflated"]');
   const isOosEl = container.querySelector('[data-role="is-oos"]');
@@ -195,6 +197,21 @@ export function createDashboard(container) {
     } else {
       exposureEl.style.display = 'none';
       exposureEl.innerHTML = '';
+    }
+
+    // Tier 2: size-tilt distribution — long vs short book across market-cap
+    // deciles.  Complements the single-scalar Size Exposure card by showing
+    // *where* on the cap spectrum the tilt actually lives.
+    const capDist = metrics?.market_cap_distribution;
+    if (
+      capDist &&
+      Array.isArray(capDist.long_per_bucket) &&
+      Array.isArray(capDist.short_per_bucket)
+    ) {
+      renderSizeTilt(capDist); // owns its own visibility (may self-hide if malformed)
+    } else {
+      sizeTiltEl.style.display = 'none';
+      sizeTiltEl.innerHTML = '';
     }
 
     // Tier 2: crisis-window stress test
@@ -554,6 +571,76 @@ export function createDashboard(container) {
       <div class="exp-headline">${headlineText}</div>
       <div class="exp-rows">${rows}</div>
     `;
+  }
+
+  function renderSizeTilt(dist) {
+    // Grouped vertical bars: for each market-cap decile (1 = smallest,
+    // n = largest), the fraction of the long book (green) vs the short book
+    // (red) sitting in that bucket.  A size-neutral L/S alpha is roughly flat;
+    // a size-biased one stacks longs at one end and shorts at the other.
+    const nb = dist.n_buckets || 10;
+    const longs = (dist.long_per_bucket || []).map((v) => (Number.isFinite(v) ? v : 0));
+    const shorts = (dist.short_per_bucket || []).map((v) => (Number.isFinite(v) ? v : 0));
+    if (longs.length !== nb || shorts.length !== nb) {
+      sizeTiltEl.style.display = 'none';
+      sizeTiltEl.innerHTML = '';
+      return;
+    }
+    const maxV = Math.max(0.001, ...longs, ...shorts);
+
+    const W = 640, H = 240, padL = 36, padR = 12, padT = 16, padB = 34;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+    const groupW = plotW / nb;
+    const barW = Math.max(3, (groupW - 6) / 2);
+    const baseY = padT + plotH;
+
+    let bars = '';
+    let xlabels = '';
+    for (let i = 0; i < nb; i++) {
+      const gx = padL + i * groupW + (groupW - barW * 2 - 2) / 2;
+      const lh = (longs[i] / maxV) * plotH;
+      const sh = (shorts[i] / maxV) * plotH;
+      bars += `
+        <rect x="${gx.toFixed(1)}" y="${(baseY - lh).toFixed(1)}" width="${barW.toFixed(1)}" height="${lh.toFixed(1)}" fill="#3fb950" rx="1"><title>Decile ${i + 1} · ${(longs[i] * 100).toFixed(1)}% of long book</title></rect>
+        <rect x="${(gx + barW + 2).toFixed(1)}" y="${(baseY - sh).toFixed(1)}" width="${barW.toFixed(1)}" height="${sh.toFixed(1)}" fill="#f85149" rx="1"><title>Decile ${i + 1} · ${(shorts[i] * 100).toFixed(1)}% of short book</title></rect>`;
+      const cx = padL + i * groupW + groupW / 2;
+      xlabels += `<text x="${cx.toFixed(1)}" y="${baseY + 14}" text-anchor="middle" font-size="9" fill="var(--text-secondary,#8b949e)">${i + 1}</text>`;
+    }
+
+    const tilt = Number.isFinite(dist.decile_tilt) ? dist.decile_tilt : 0;
+    // decile_tilt = long_avg_decile − short_avg_decile; >0 means longs skew larger-cap.
+    let headline;
+    if (Math.abs(tilt) < 0.5) {
+      headline = 'Size-neutral — longs and shorts spread evenly across the cap spectrum.';
+    } else if (tilt > 0) {
+      headline = `Large-cap tilt: longs sit ${tilt.toFixed(1)} deciles higher than shorts (long big / short small).`;
+    } else {
+      headline = `Small-cap tilt: longs sit ${Math.abs(tilt).toFixed(1)} deciles lower than shorts (long small / short big).`;
+    }
+    const approxNote = dist.is_approximation
+      ? ' <span style="opacity:.6">(cap proxied via close price)</span>'
+      : '';
+
+    sizeTiltEl.innerHTML = `
+      <div class="exp-header">
+        <div class="exp-title">Size Tilt</div>
+        <div class="exp-subtitle">Long vs short book by market-cap decile (1 = smallest, ${nb} = largest)${approxNote}</div>
+      </div>
+      <div class="exp-headline">${headline}</div>
+      <svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Size tilt by market-cap decile">
+        <line x1="${padL}" y1="${baseY}" x2="${W - padR}" y2="${baseY}" stroke="var(--border,#30363d)" stroke-width="1"/>
+        ${bars}
+        ${xlabels}
+        <text x="${padL}" y="${H - 4}" font-size="9" fill="var(--text-secondary,#8b949e)">smaller cap</text>
+        <text x="${W - padR}" y="${H - 4}" text-anchor="end" font-size="9" fill="var(--text-secondary,#8b949e)">larger cap</text>
+      </svg>
+      <div style="display:flex; gap:16px; justify-content:center; margin-top:4px; font-size:11px; color:var(--text-secondary,#8b949e);">
+        <span><span style="display:inline-block; width:10px; height:10px; background:#3fb950; border-radius:2px; vertical-align:middle;"></span> long book</span>
+        <span><span style="display:inline-block; width:10px; height:10px; background:#f85149; border-radius:2px; vertical-align:middle;"></span> short book</span>
+      </div>
+    `;
+    sizeTiltEl.style.display = '';
   }
 
   function renderStress(regimes) {

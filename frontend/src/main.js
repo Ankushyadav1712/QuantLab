@@ -13,6 +13,8 @@ import { createComparison } from './components/comparison.js';
 import { createCorrelation } from './components/correlation.js';
 import { createBatchComparison } from './components/batch_comparison.js';
 import { createSweepResults } from './components/sweep.js';
+import { createBrainValidator } from './components/brain_validator.js';
+import { buildResultCsv } from './ui/export_csv.js';
 import { toast } from './ui/toast.js';
 
 // ---------- Layout ----------
@@ -38,6 +40,7 @@ root.innerHTML = `
           </svg>
         </button>
         <button type="button" id="op-docs-btn">Operator Docs</button>
+        <button type="button" id="export-csv-btn" title="Download the backtest return series as CSV" disabled>Export CSV</button>
         <button type="button" id="export-tearsheet-btn" title="Print or save the current backtest as a PDF tearsheet" disabled>Export PDF</button>
       </div>
     </header>
@@ -52,6 +55,7 @@ root.innerHTML = `
       <section id="correlation"></section>
       <section id="batch-comparison"></section>
       <section id="research-charts"></section>
+      <section id="brain-validator"></section>
       <section id="portfolio-analysis"></section>
     </main>
   </div>
@@ -69,6 +73,7 @@ const portfolioAnalysis = createPortfolioAnalysis(
   document.getElementById('portfolio-analysis')
 );
 const researchCharts = createResearchCharts(document.getElementById('research-charts'));
+const brainValidator = createBrainValidator(document.getElementById('brain-validator'));
 
 // ---------- State ----------
 
@@ -807,6 +812,24 @@ document.getElementById('export-tearsheet-btn').addEventListener('click', () => 
   openTearsheet(lastResponse);
 });
 
+document.getElementById('export-csv-btn').addEventListener('click', () => {
+  if (!lastResponse) {
+    toast('Run a backtest first, then export.', 'warning');
+    return;
+  }
+  const csv = buildResultCsv(lastResponse);
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'quantlab_backtest.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast('Exported CSV', 'success', { duration: 2000 });
+});
+
 let cachedOperators = null;
 
 const CATEGORY_LABELS = {
@@ -1093,6 +1116,8 @@ function renderResponse(resp) {
   // Enable the Export button now that a backtest result is available.
   const exportBtn = document.getElementById('export-tearsheet-btn');
   if (exportBtn) exportBtn.disabled = false;
+  const exportCsvBtn = document.getElementById('export-csv-btn');
+  if (exportCsvBtn) exportCsvBtn.disabled = false;
   // New shape carries IS/OOS pairs.  Old saved-alpha records (pre-OOS) used
   // flat `metrics`/`timeseries` keys — fall back to those so loading legacy
   // alphas from the sidebar still renders the dashboard.
@@ -1110,4 +1135,7 @@ function renderResponse(resp) {
   });
   // Tier 4 research charts (IC time series + decay + quintile + risk decomp)
   researchCharts.render(isMetrics, resp.factor_decomposition || null);
+  // Brain validator: expose the last local return series so it can be validated
+  // against an uploaded external (e.g. WorldQuant Brain) series.
+  brainValidator.setLocalResult(isTs);
 }
