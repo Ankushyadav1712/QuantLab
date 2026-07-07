@@ -1,0 +1,3 @@
+# Documentation site (MkDocs + Material theme). Pulls in mkdocs and
+# pymdown-extensions transitively. Build with: mkdocs build --strict
+mkdocs-material>=9.5,<10
