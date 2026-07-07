@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import functools
 import hmac
 import json
 import logging
 import math
 import os
+import threading
 import time
 import warnings
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1207,6 +1209,57 @@ app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 
 
+# --- Backtest concurrency gate --------------------------------------------
+# A full-universe backtest is memory-heavy; two at once roughly doubles peak
+# RAM and OOM-kills the single worker on small hosts (e.g. Render's 512MB free
+# tier), 502-ing every in-flight request. Serialize heavy work behind a
+# semaphore so only N run at once (default 1 → strictly sequential). Bump
+# QUANTLAB_MAX_CONCURRENT_BACKTESTS on a larger instance for real parallelism.
+_MAX_CONCURRENT_BACKTESTS = max(1, int(os.getenv("QUANTLAB_MAX_CONCURRENT_BACKTESTS", "1")))
+# How long a queued request waits for a free slot before we shed it with a 429
+# instead of tying up a worker thread (and the client) indefinitely.
+_BACKTEST_QUEUE_TIMEOUT = float(os.getenv("QUANTLAB_BACKTEST_QUEUE_TIMEOUT", "90"))
+_backtest_gate = threading.BoundedSemaphore(_MAX_CONCURRENT_BACKTESTS)
+
+
+@contextmanager
+def _backtest_slot() -> Any:
+    """Hold one backtest slot for the duration of the block.
+
+    MUST be entered from a worker thread — a sync path operation's body (FastAPI
+    runs those in a threadpool) or inside run_in_threadpool — never directly on
+    the event loop, since acquire() blocks and would freeze the loop (the very
+    failure this guards against). Sheds load with 429 if no slot frees up within
+    the queue timeout.
+    """
+    if not _backtest_gate.acquire(timeout=_BACKTEST_QUEUE_TIMEOUT):
+        raise HTTPException(
+            status_code=429,
+            detail="Server is busy running another backtest. Please retry in a moment.",
+            headers={"Retry-After": "5"},
+        )
+    try:
+        yield
+    finally:
+        _backtest_gate.release()
+
+
+def _serialize_backtest(func: Any) -> Any:
+    """Decorator: run a SYNC backtest endpoint under the concurrency gate.
+
+    Placed *innermost* (directly above ``def``), below ``@app.post`` and
+    ``@limiter.limit``; functools.wraps preserves the signature so FastAPI's
+    dependency injection and slowapi's IP extraction still see request/req.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with _backtest_slot():
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
 @app.exception_handler(RateLimitExceeded)
 async def _rate_limit_handler(_request: Request, exc: RateLimitExceeded):
     return JSONResponse(
@@ -2002,6 +2055,7 @@ def validate(request: Request, req: ValidateRequest):
 
 @app.post("/api/simulate")
 @limiter.limit(_LIMIT_SIMULATE)
+@_serialize_backtest
 def simulate(request: Request, req: SimulationRequest):
     del request  # required-by-name for slowapi; not used in the handler
     if not _state.get("ready", False):
@@ -2076,6 +2130,7 @@ def simulate(request: Request, req: SimulationRequest):
 
 @app.post("/api/sweep")
 @limiter.limit(_LIMIT_SIMULATE)
+@_serialize_backtest
 def sweep(request: Request, req: SweepRequest):
     """Parameter-sweep variant of /api/simulate.
 
@@ -2150,6 +2205,7 @@ def sweep(request: Request, req: SweepRequest):
 
 @app.post("/api/compare")
 @limiter.limit(_LIMIT_SIMULATE)
+@_serialize_backtest
 def compare_alphas(request: Request, req: CompareRequest):
     """Run 2-4 expressions through the IS-only pipeline and return them all
     overlaid for visual comparison.
@@ -2234,6 +2290,7 @@ _BATCH_MAX_ALPHAS = 50
 
 @app.post("/api/batch_simulate")
 @limiter.limit(_LIMIT_SIMULATE)
+@_serialize_backtest
 def batch_simulate(request: Request, req: BatchSimulationRequest):
     """Run up to ``_BATCH_MAX_ALPHAS`` alphas through the IS-only pipeline in
     parallel and return a ranked metrics table + a return-series correlation
@@ -2318,6 +2375,7 @@ def batch_simulate(request: Request, req: BatchSimulationRequest):
 
 @app.post("/api/alphas/multi-blend")
 @limiter.limit(_LIMIT_SIMULATE)
+@_serialize_backtest
 def multi_blend(request: Request, req: MultiAlphaRequest):
     del request  # required-by-name for slowapi
     if not _state.get("ready", False):
@@ -2455,29 +2513,32 @@ def _prepare_alpha_save(
     an empty body. Offloading to the threadpool keeps the loop free, matching
     how the sync backtest endpoints (simulate, sweep, …) already behave.
     """
-    alpha = _evaluate(expression)
-    cfg = _make_config(settings)
-    _, gics_map, universe_id = _resolve_universe(settings or {})
-    response = _build_response(expression, alpha, cfg, gics_map=gics_map, universe_id=universe_id)
-    # The IS/OOS refactor split `metrics` into `is_metrics` + `oos_metrics`;
-    # the persisted summary columns track the IS half (the always-present one).
-    metrics = response["is_metrics"]
+    with _backtest_slot():
+        alpha = _evaluate(expression)
+        cfg = _make_config(settings)
+        _, gics_map, universe_id = _resolve_universe(settings or {})
+        response = _build_response(
+            expression, alpha, cfg, gics_map=gics_map, universe_id=universe_id
+        )
+        # The IS/OOS refactor split `metrics` into `is_metrics` + `oos_metrics`;
+        # the persisted summary columns track the IS half (the always-present one).
+        metrics = response["is_metrics"]
 
-    # Provenance: bind the saved alpha to the exact code + data state that
-    # produced these numbers.  If the user re-runs this alpha six months
-    # from now and gets different numbers, the signature diff tells them
-    # whether the cause was a code edit, a data refresh, or something else.
-    provenance = build_provenance(
-        close_matrix=_state["data"].get("close"),
-        cached_code_sig=_state.get("code_signature"),
-        cached_git_hash=_state.get("git_hash"),
-    )
-    # Stash provenance inside the result_json blob too so older clients
-    # that only read the blob (not the dedicated columns) still see it.
-    response["provenance"] = provenance
+        # Provenance: bind the saved alpha to the exact code + data state that
+        # produced these numbers.  If the user re-runs this alpha six months
+        # from now and gets different numbers, the signature diff tells them
+        # whether the cause was a code edit, a data refresh, or something else.
+        provenance = build_provenance(
+            close_matrix=_state["data"].get("close"),
+            cached_code_sig=_state.get("code_signature"),
+            cached_git_hash=_state.get("git_hash"),
+        )
+        # Stash provenance inside the result_json blob too so older clients
+        # that only read the blob (not the dedicated columns) still see it.
+        response["provenance"] = provenance
 
-    payload = json.dumps(response, default=str)
-    return metrics, provenance, payload
+        payload = json.dumps(response, default=str)
+        return metrics, provenance, payload
 
 
 @app.post("/api/alphas", dependencies=[Depends(require_api_token)])

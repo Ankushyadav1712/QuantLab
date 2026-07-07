@@ -51,6 +51,13 @@ BATCH_METRIC_KEYS = (
 # |ρ| at or above this flags a redundant pair in the correlation matrix.
 REDUNDANT_RHO = 0.7
 
+# Cap on parallel backtest workers. Each worker holds a full backtest's memory,
+# so N workers ≈ N× peak RAM → OOM on a small host. os.cpu_count() reports the
+# HOST's cores on shared platforms (e.g. Render's free tier), not the
+# container's throttled slice, so we never trust it as the default. Gate via
+# QUANTLAB_MAX_WORKERS (default 1 → sequential; raise only where RAM allows).
+_MAX_WORKERS_CAP = max(1, int(os.getenv("QUANTLAB_MAX_WORKERS", "1")))
+
 
 def _run_one(
     item: dict[str, Any],
@@ -156,7 +163,7 @@ def run_batch(
     """
     gics_data = gics_data or {}
     if max_workers is None:
-        max_workers = max(1, min(len(alphas) or 1, os.cpu_count() or 4))
+        max_workers = max(1, min(len(alphas) or 1, _MAX_WORKERS_CAP))
 
     def _task(item: dict[str, Any]) -> dict[str, Any]:
         try:
