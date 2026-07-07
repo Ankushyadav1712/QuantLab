@@ -1,0 +1,43 @@
+site_name: QuantLab
+site_description: WorldQuant-Brain-style cross-sectional alpha backtester
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  features:
+    - navigation.top
+    - navigation.sections
+    - content.code.copy
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Concepts: concepts.md
+  - Writing alphas: writing-alphas.md
+  - Backtest settings: backtest-settings.md
+  - Reference:
+      - Operators: reference/operators.md
+      - Fields: reference/fields.md
+      - Alpha cookbook: reference/cookbook.md
+  - Deployment: deployment.md
