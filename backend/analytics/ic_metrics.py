@@ -38,57 +38,49 @@ TRADING_DAYS_PER_YEAR = 252
 
 
 def _rank_along_rows(arr: np.ndarray) -> np.ndarray:
-    """Rank each row independently, with NaN preserved as NaN.
+    """Rank each row independently (0-based average ranks), NaN preserved.
 
-    Uses average-rank for ties (matches scipy.stats.rankdata's default).
-    Vectorised across the row axis.
+    Vectorised via pandas' C-level ranker (``method="average"``,
+    ``na_option="keep"``) instead of a Python row loop — the same result, orders
+    of magnitude faster (this was the single hottest function in a backtest).
+    pandas ranks are 1-based, so we subtract 1 to keep this helper's historical
+    0-based output; rows with <2 valid values are nulled to match the original
+    contract (their only consumer, ``_row_corr``, treats them as NaN anyway).
+    Ranks feed a Pearson correlation, which is affine-invariant, so the 0-vs-1
+    base is immaterial downstream regardless.
     """
-    out = np.full_like(arr, np.nan, dtype=float)
-    for i in range(arr.shape[0]):
-        row = arr[i]
-        mask = ~np.isnan(row)
-        if mask.sum() < 2:
-            continue
-        valid = row[mask]
-        # argsort-of-argsort gives ranks; convert ties to average rank below
-        order = valid.argsort()
-        ranks = np.empty_like(order, dtype=float)
-        ranks[order] = np.arange(len(valid), dtype=float)
-        # Handle ties via average rank — group equal values and overwrite
-        # their ranks with the group mean
-        sorted_vals = valid[order]
-        i_start = 0
-        for j in range(1, len(sorted_vals) + 1):
-            if j == len(sorted_vals) or sorted_vals[j] != sorted_vals[i_start]:
-                if j - i_start > 1:
-                    avg = (i_start + j - 1) / 2.0
-                    for k in range(i_start, j):
-                        ranks[order[k]] = avg
-                i_start = j
-        out[i, mask] = ranks
-    return out
+    if arr.size == 0:
+        return np.full_like(arr, np.nan, dtype=float)
+    ranks = pd.DataFrame(arr).rank(axis=1, method="average", na_option="keep").to_numpy()
+    ranks = ranks - 1.0  # out-of-place: to_numpy() can be read-only; also gives 0-based
+    valid = np.sum(~np.isnan(arr), axis=1)
+    ranks[valid < 2, :] = np.nan
+    return ranks
 
 
 def _row_corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Per-row Pearson correlation between two (T, N) matrices, NaN-safe.
 
-    Returns a (T,) array.  Rows where either side has <2 valid observations
-    or zero variance produce NaN.
+    Vectorised across rows. Rows where either side has <2 valid observations or
+    zero variance produce NaN. Equivalent to the standard Pearson
+    ``r = Sxy / sqrt(Sxx * Syy)`` (the sample ddof factors cancel in the ratio);
+    each row is centred on its own valid-cell mean to avoid cancellation error.
     """
-    out = np.full(a.shape[0], np.nan, dtype=float)
-    for i in range(a.shape[0]):
-        mask = ~np.isnan(a[i]) & ~np.isnan(b[i])
-        if mask.sum() < 2:
-            continue
-        x = a[i, mask]
-        y = b[i, mask]
-        sx = x.std(ddof=1)
-        sy = y.std(ddof=1)
-        if sx <= 0 or sy <= 0:
-            continue
-        out[i] = float(
-            ((x - x.mean()) * (y - y.mean())).mean() * (len(x) / (len(x) - 1)) / (sx * sy)
-        )
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    valid = ~np.isnan(a) & ~np.isnan(b)
+    n = valid.sum(axis=1).astype(float)
+    n_safe = np.where(n > 0, n, np.nan)
+    ma = np.where(valid, a, 0.0).sum(axis=1) / n_safe
+    mb = np.where(valid, b, 0.0).sum(axis=1) / n_safe
+    da = np.where(valid, a - ma[:, None], 0.0)
+    db = np.where(valid, b - mb[:, None], 0.0)
+    sxx = (da * da).sum(axis=1)
+    syy = (db * db).sum(axis=1)
+    sxy = (da * db).sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = sxy / np.sqrt(sxx * syy)
+    out[(n < 2) | (sxx <= 0) | (syy <= 0)] = np.nan
     return out
 
 

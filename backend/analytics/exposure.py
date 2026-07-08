@@ -244,27 +244,28 @@ def compute_size_exposure(
     size_log = size_aligned.where(size_aligned > 0, other=np.nan).apply(np.log)
     w = weights[cols]
 
-    daily_corrs: list[float] = []
-    for date in w.index:
-        x = w.loc[date].to_numpy(dtype=float)
-        y = size_log.loc[date].to_numpy(dtype=float)
-        mask = ~np.isnan(x) & ~np.isnan(y)
-        if mask.sum() < 3:
-            continue
-        xv = x[mask]
-        yv = y[mask]
-        sx = xv.std(ddof=1)
-        sy = yv.std(ddof=1)
-        if sx <= 0 or sy <= 0:
-            continue
-        c = float(((xv - xv.mean()) * (yv - yv.mean())).sum() / ((len(xv) - 1) * sx * sy))
-        if not math.isnan(c):
-            daily_corrs.append(c)
+    # Per-day Pearson corr(weights, log(size)), vectorised across dates (was a
+    # per-row Python loop with slow .loc[date] label lookups). Each row is
+    # centred on its own valid-cell mean; rows with <3 valid pairs or zero
+    # variance drop out. r = Sxy / sqrt(Sxx·Syy) — identical to the old formula.
+    x_arr = w.to_numpy(dtype=float)
+    y_arr = size_log.to_numpy(dtype=float)
+    valid = ~np.isnan(x_arr) & ~np.isnan(y_arr)
+    n = valid.sum(axis=1).astype(float)
+    n_safe = np.where(n > 0, n, np.nan)
+    mx = np.where(valid, x_arr, 0.0).sum(axis=1) / n_safe
+    my = np.where(valid, y_arr, 0.0).sum(axis=1) / n_safe
+    dx = np.where(valid, x_arr - mx[:, None], 0.0)
+    dy = np.where(valid, y_arr - my[:, None], 0.0)
+    sxx = (dx * dx).sum(axis=1)
+    syy = (dy * dy).sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        corr = (dx * dy).sum(axis=1) / np.sqrt(sxx * syy)
+    corr[(n < 3) | (sxx <= 0) | (syy <= 0)] = np.nan
 
-    if not daily_corrs:
+    arr = corr[~np.isnan(corr)]
+    if arr.size == 0:
         return None
-
-    arr = np.asarray(daily_corrs)
     return {
         "size_corr": float(arr.mean()),
         "size_corr_std": float(arr.std(ddof=1)) if len(arr) > 1 else 0.0,
@@ -331,9 +332,13 @@ def compute_market_cap_distribution(
     long_decile_means: list[float] = []
     short_decile_means: list[float] = []
 
-    for date in w.index:
-        size_row = size_aligned.loc[date].to_numpy(dtype=float)
-        w_row = w.loc[date].to_numpy(dtype=float)
+    # Pre-extract to numpy once — per-day .loc[date] label lookups dominated the
+    # profile; iterating row arrays keeps the same bucketing logic, much faster.
+    size_arr = size_aligned.to_numpy(dtype=float)
+    w_arr = w.to_numpy(dtype=float)
+    for i in range(w_arr.shape[0]):
+        size_row = size_arr[i]
+        w_row = w_arr[i]
         # Need both signal and a positive market cap to bucket
         mask = (~np.isnan(size_row)) & (size_row > 0) & (~np.isnan(w_row))
         if mask.sum() < n_buckets:
