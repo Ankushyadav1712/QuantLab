@@ -77,6 +77,13 @@ export function createBatchComparison(container) {
     container.style.display = '';
   }
 
+  // Transient progress line shown while a streaming batch is running; replaced
+  // by the ranked table once render() is called with the final payload.
+  function setStatus(text) {
+    container.style.display = '';
+    container.innerHTML = `<div class="placeholder">${escapeHtml(text)}</div>`;
+  }
+
   // Sort a copy of the results by the active column. Errored alphas (no
   // metrics) always sink to the bottom regardless of direction.
   function sortedResults() {
@@ -202,6 +209,7 @@ export function createBatchComparison(container) {
   return {
     render,
     clear,
+    setStatus,
     setOnSelectAlpha: (cb) => {
       callbacks.onSelectAlpha = cb;
     },
