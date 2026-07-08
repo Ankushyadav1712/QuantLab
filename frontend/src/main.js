@@ -1,7 +1,7 @@
 // QuantLab — app entry point.
 
 import './styles/index.css';
-import { api } from './api.js';
+import { api, openBatchStream } from './api.js';
 import { createEditor } from './components/editor.js';
 import { createDashboard } from './components/dashboard.js';
 import { createCharts } from './components/charts.js';
@@ -402,17 +402,53 @@ sidebar.setOnBatchCompare(async (items) => {
   if (!items || items.length < 2) return;
   const settings = editor.getSettings();
   const names = Object.fromEntries(items.map((i) => [String(i.id), i.name]));
-  try {
-    const resp = await api.batchSimulate(
-      items.map((i) => ({ id: i.id, expression: i.expression })),
-      settings,
-    );
-    batchComparison.render(resp, { names });
-    document.getElementById('batch-comparison').scrollIntoView({ behavior: 'smooth' });
-    toast(`Batch: ${resp.n_ok}/${resp.n_alphas} ran`, 'success', { duration: 2500 });
-  } catch (e) {
-    toast(e.message, 'error', { title: 'Batch compare failed' });
-  }
+  const alphas = items.map((i) => ({ id: i.id, expression: i.expression }));
+  const section = document.getElementById('batch-comparison');
+
+  // Reliable path: one POST, render the whole table when it returns.
+  const runViaPost = async () => {
+    try {
+      const resp = await api.batchSimulate(alphas, settings);
+      batchComparison.render(resp, { names });
+      section.scrollIntoView({ behavior: 'smooth' });
+      toast(`Batch: ${resp.n_ok}/${resp.n_alphas} ran`, 'success', { duration: 2500 });
+    } catch (e) {
+      toast(e.message, 'error', { title: 'Batch compare failed' });
+    }
+  };
+
+  // Progressive enhancement: stream per-alpha progress over a WebSocket, and
+  // fall back to the POST path if the socket can't connect or drops (common on
+  // a spun-down free-tier instance).
+  const collected = [];
+  let fellBack = false;
+  batchComparison.setStatus(`Running batch… 0/${alphas.length}`);
+  section.scrollIntoView({ behavior: 'smooth' });
+  openBatchStream(alphas, settings, {
+    onResult: (msg) => {
+      collected[msg.index] = msg.row;
+      const done = collected.filter(Boolean).length;
+      batchComparison.setStatus(`Running batch… ${done}/${msg.total}`);
+    },
+    onComplete: (msg) => {
+      batchComparison.render(
+        {
+          results: collected,
+          correlation_matrix: msg.correlation_matrix,
+          n_alphas: msg.n_alphas,
+          n_ok: msg.n_ok,
+          universe_id: msg.universe_id,
+        },
+        { names },
+      );
+      toast(`Batch: ${msg.n_ok}/${msg.n_alphas} ran`, 'success', { duration: 2500 });
+    },
+    onError: () => {
+      if (fellBack) return;
+      fellBack = true;
+      runViaPost();
+    },
+  });
 });
 
 // Clicking a batch row loads that saved alpha's full backtest — same as the

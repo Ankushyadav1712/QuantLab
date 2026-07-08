@@ -78,3 +78,74 @@ export const api = {
   getUniverses: () => request('GET', '/api/universes'),
   getExamples: () => request('GET', '/api/examples'),
 };
+
+// Streaming batch backtest over WebSocket. Invokes onResult({index,total,row})
+// per alpha, then onComplete({n_alphas,n_ok,correlation_matrix,...}); onError
+// fires once (and only once) if the socket can't connect, drops, or the server
+// reports an error — callers should fall back to api.batchSimulate() there.
+// Returns a handle with close(). WebSockets are flaky on some hosts (e.g. a
+// spun-down free-tier instance), so the fallback path is the norm, not an edge.
+export function openBatchStream(alphas, settings = {}, { onResult, onComplete, onError } = {}) {
+  const wsUrl = BASE_URL.replace(/^http/i, 'ws') + '/ws/batch';
+  let ws;
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch (e) {
+    onError?.(e?.message || 'WebSocket unavailable');
+    return { close() {} };
+  }
+  let settled = false;
+  const close = () => {
+    try {
+      ws.close();
+    } catch (_) { /* already closing */ }
+  };
+  ws.addEventListener('open', () => {
+    try {
+      ws.send(JSON.stringify({ alphas, settings }));
+    } catch (e) {
+      if (!settled) {
+        settled = true;
+        onError?.(e?.message || 'send failed');
+      }
+    }
+  });
+  ws.addEventListener('message', (ev) => {
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch (_) {
+      return;
+    }
+    if (msg.type === 'result') {
+      onResult?.(msg);
+      return;
+    }
+    if (settled) return;
+    if (msg.type === 'complete') {
+      settled = true;
+      onComplete?.(msg);
+      close();
+    } else if (msg.type === 'error') {
+      settled = true;
+      onError?.(msg.detail || 'batch failed');
+      close();
+    }
+  });
+  ws.addEventListener('error', () => {
+    if (settled) return;
+    settled = true;
+    onError?.('WebSocket connection failed');
+  });
+  ws.addEventListener('close', () => {
+    if (settled) return;
+    settled = true;
+    onError?.('WebSocket closed before completing');
+  });
+  return {
+    close() {
+      settled = true; // suppress the onError we'd otherwise fire on close
+      close();
+    },
+  };
+}

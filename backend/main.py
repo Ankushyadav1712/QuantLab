@@ -64,13 +64,13 @@ from data.universes import (
 from db.database import connect
 from db.migrations import init_db
 from engine.backtester import Backtester, SimulationConfig
-from engine.batch import run_batch
+from engine.batch import _correlation, _run_one, run_batch
 from engine.combine import greedy_orthogonal_select, ic_weights
 from engine.evaluator import AlphaEvaluator
 from engine.lint import lint_ast
 from engine.parser import BinaryOp, DataField, FunctionCall, Parser, UnaryOp
 from engine.sweep import combo_for_index, expand_sweeps
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -2373,6 +2373,146 @@ def batch_simulate(request: Request, req: BatchSimulationRequest):
         "settings": _config_to_dict(cfg),
         "universe_id": universe_id,
     }
+
+
+def _prepare_batch(
+    req: BatchSimulationRequest,
+) -> tuple[
+    list[dict[str, Any]],
+    SimulationConfig,
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, dict[str, str | None]],
+    Any,
+    Any,
+    str,
+]:
+    """Validate a batch request + resolve its universe (shared by the REST and
+    WS paths). Raises ValueError with a user-facing message on bad input."""
+    if not _state.get("ready", False):
+        raise ValueError("System is downloading financial data. Please wait a moment.")
+    if not req.alphas:
+        raise ValueError("No alphas provided")
+    if len(req.alphas) > _BATCH_MAX_ALPHAS:
+        raise ValueError(
+            f"Batch too large: {len(req.alphas)} alphas (max {_BATCH_MAX_ALPHAS}). "
+            "Split into smaller batches."
+        )
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, a in enumerate(req.alphas):
+        expr = str(a.get("expression") or "").strip()
+        if not expr:
+            raise ValueError(f"Alpha at index {i} is missing an 'expression'")
+        aid = str(a.get("id") or f"alpha_{i + 1}")
+        if aid in seen:
+            raise ValueError(f"Duplicate alpha id: {aid!r}")
+        seen.add(aid)
+        items.append({"id": aid, "expression": expr})
+    cfg = _make_config(req.settings, run_oos=False)
+    _, gics_map, universe_id = _resolve_universe(req.settings or {})
+    data = _state["data"]
+    gics_data = _state.get("gics_data", {})
+    spy = _state.get("spy_returns")
+    size_field = data.get("market_cap")
+    if size_field is None:
+        size_field = data.get("close")
+    return items, cfg, data, gics_data, gics_map, spy, size_field, universe_id
+
+
+def _run_one_slot(
+    item: dict[str, Any],
+    cfg: SimulationConfig,
+    data: dict[str, Any],
+    gics_data: dict[str, Any],
+    gics_map: dict[str, dict[str, str | None]],
+    spy: Any,
+    size_field: Any,
+) -> dict[str, Any]:
+    """Run one batch alpha under the shared backtest concurrency gate."""
+    with _backtest_slot():
+        return _run_one(item, cfg, data, gics_data, gics_map, spy, size_field)
+
+
+@app.websocket("/ws/batch")
+async def ws_batch(websocket: WebSocket) -> None:
+    """Streaming batch backtest: push each alpha's ranked row as it finishes,
+    then a final correlation matrix.
+
+    Progressive enhancement over ``POST /api/batch_simulate`` — the frontend
+    falls back to that if the socket is unavailable. Each backtest runs in the
+    threadpool under the same concurrency gate as the REST endpoints, so the
+    event loop stays free to stream and a long batch can't starve the worker.
+    Message protocol (server → client):
+      {"type": "result", "index": i, "total": n, "row": {...}}
+      {"type": "complete", "n_alphas", "n_ok", "correlation_matrix", ...}
+      {"type": "error", "detail": "..."}
+    """
+    await websocket.accept()
+    try:
+        try:
+            payload = await websocket.receive_json()
+            req = BatchSimulationRequest(**payload)
+            (
+                items,
+                cfg,
+                data,
+                gics_data,
+                gics_map,
+                spy,
+                size_field,
+                universe_id,
+            ) = await run_in_threadpool(_prepare_batch, req)
+        except Exception as exc:  # malformed request / validation → user-facing error
+            await websocket.send_json({"type": "error", "detail": str(exc) or "Invalid request"})
+            return
+
+        total = len(items)
+        results: list[dict[str, Any]] = []
+        for i, item in enumerate(items):
+            row = await run_in_threadpool(
+                _run_one_slot, item, cfg, data, gics_data, gics_map, spy, size_field
+            )
+            results.append(row)
+            # Strip the private return series (used only for correlation) before
+            # sending the row to the client.
+            client_row = {k: v for k, v in row.items() if not k.startswith("_")}
+            await websocket.send_json(
+                {"type": "result", "index": i, "total": total, "row": client_row}
+            )
+
+        series: dict[str, pd.Series] = {}
+        labels: list[str] = []
+        for r in results:
+            rs = r.get("_returns")
+            if rs is not None and not rs.empty:
+                lbl = str(r.get("id"))
+                series[lbl] = rs
+                labels.append(lbl)
+        n_ok = sum(1 for r in results if "metrics" in r)
+        await websocket.send_json(
+            {
+                "type": "complete",
+                "n_alphas": total,
+                "n_ok": n_ok,
+                "correlation_matrix": _correlation(series, labels),
+                "settings": _config_to_dict(cfg),
+                "universe_id": universe_id,
+            }
+        )
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:  # never leak a stack trace over the socket
+        log.exception("ws_batch failed")
+        try:
+            await websocket.send_json({"type": "error", "detail": f"internal error: {exc}"})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.post("/api/alphas/multi-blend")
