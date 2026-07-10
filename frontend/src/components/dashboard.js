@@ -1,5 +1,5 @@
-// Dashboard — primary 6-card grid (IS metrics) + IS/OOS comparison panel.
-// The 6 cards always reflect the in-sample window; the comparison section
+// Dashboard — primary metric-card grid (IS metrics) + IS/OOS comparison panel.
+// The cards always reflect the in-sample window; the comparison section
 // shows the OOS half side-by-side with a decay/overfitting verdict.
 
 const METRICS = [
@@ -32,11 +32,25 @@ const METRICS = [
     tooltip: 'Average dollar value traded per day (|Δposition|.sum). Drives transaction costs.',
   },
   {
+    key: 'avg_turnover_frac',
+    label: 'Turnover %',
+    format: (v) => (v * 100).toFixed(1) + '%',
+    classify: () => '',
+    tooltip: 'Average daily traded value as a % of booksize — WorldQuant Brain\'s turnover convention, directly comparable to a Brain simulation.',
+  },
+  {
+    key: 'margin_bps',
+    label: 'Margin',
+    format: (v) => v.toFixed(1) + ' bps',
+    classify: (v) => (v > 5 ? 'good' : v < 0 ? 'bad' : ''),
+    tooltip: 'PnL per dollar traded (basis points): total PnL / total turnover × 10,000 — Brain\'s margin metric. Higher means the alpha survives more cost pressure.',
+  },
+  {
     key: 'fitness',
     label: 'Fitness',
     format: (v) => v.toFixed(3),
     classify: (v) => (v > 0.5 ? 'good' : v < 0 ? 'bad' : ''),
-    tooltip: 'BRAIN-style composite: sharpe × √|annual_return| × (1 − fractional_turnover).',
+    tooltip: 'QuantLab composite: sharpe × √|annual_return| × (1 − fractional_turnover). For Brain\'s exact Fitness formula see fitness_wq in the tearsheet.',
   },
   {
     key: 'win_rate',
@@ -102,7 +116,7 @@ export function createDashboard(container) {
   const wfEl = container.querySelector('[data-role="walk-forward"]');
   const factorEl = container.querySelector('[data-role="factor-decomp"]');
 
-  // Build the 6 metric cards
+  // Build the metric cards
   const cards = {};
   for (const m of METRICS) {
     const card = document.createElement('div');

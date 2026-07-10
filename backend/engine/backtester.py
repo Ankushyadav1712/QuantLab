@@ -33,6 +33,54 @@ def _quick_sharpe(daily_returns: list[float]) -> float:
     return float(arr.mean() / std * np.sqrt(252))
 
 
+def _waterfill(mag: np.ndarray, target: np.ndarray, cap: float) -> np.ndarray:
+    """Per row, solve ``sum_i min(c * mag_i, cap) == target`` for ``c >= 0``
+    and return ``min(c * mag, cap)``.  Exact (sort + prefix sums) — no
+    iteration, no convergence budget.
+
+    ``mag`` is a (rows × names) matrix of non-negative magnitudes; ``target``
+    the desired gross per row.  When a row can't reach its target because
+    ``n_live * cap < target`` (saturation), every live name pins at the cap.
+    Rows with ``target == 0`` or no live names come back all-zero.
+    """
+    n_rows, n_cols = mag.shape
+    s = -np.sort(-mag, axis=1)  # magnitudes, descending
+    csum = np.cumsum(s, axis=1)
+    total = csum[:, -1]
+    # With the k largest names capped, the scale for the rest is
+    #   c_k = (target - k*cap) / (total - top_k_sum)
+    # and the correct k is the first where the (k+1)-th largest name no
+    # longer exceeds the cap under c_k.
+    k = np.arange(n_cols, dtype=np.float64)
+    topk = np.concatenate([np.zeros((n_rows, 1)), csum[:, :-1]], axis=1)
+    denom = total[:, None] - topk
+    with np.errstate(divide="ignore", invalid="ignore"):
+        c = (target[:, None] - k[None, :] * cap) / denom
+    ok = (denom > 0) & (c >= 0) & (c * s <= cap + 1e-12)
+    k_star = np.argmax(ok, axis=1)
+    c_star = np.where(ok.any(axis=1), c[np.arange(n_rows), k_star], np.inf)
+    # c = inf marks saturated rows: min(inf·mag, cap) pins live names at the
+    # cap; the explicit where() guards the 0·inf = NaN of dead names.
+    out = np.minimum(mag * c_star[:, None], cap)
+    return np.where(mag > 0.0, out, 0.0)
+
+
+def _redistribute_capped(weights: np.ndarray, cap: float) -> np.ndarray:
+    """Brain-style truncation: cap at ±``cap`` and redistribute the clipped
+    mass — WorldQuant Brain keeps the book fully invested under truncation
+    instead of letting capped weight evaporate (a plain clip's behavior).
+
+    Each SIDE is water-filled back to its own pre-clip gross (longs to
+    sum(w⁺), shorts to sum(|w⁻|)), so the pre-clip net/gross split — zero
+    net for any demeaned alpha — survives redistribution.  A side that can't
+    reach its target under the cap saturates (all names at ±cap), matching
+    what a plain clip would have left there.
+    """
+    pos = np.where(weights > 0, weights, 0.0)
+    neg = np.where(weights < 0, -weights, 0.0)
+    return _waterfill(pos, pos.sum(axis=1), cap) - _waterfill(neg, neg.sum(axis=1), cap)
+
+
 @dataclass
 class SimulationConfig:
     universe: list[str]
@@ -42,6 +90,14 @@ class SimulationConfig:
         "none", "market", "sector", "industry_group", "industry", "sub_industry"
     ] = "market"
     truncation: float = 0.05
+    # Brain-parity truncation.  A plain clip at ±truncation leaves sum(|w|)
+    # below 1 whenever the cap binds, silently shrinking gross exposure below
+    # booksize.  WorldQuant Brain instead *redistributes* the clipped weight
+    # across uncapped names so the book stays fully invested.  When True we
+    # replicate that with exact per-side water-filling (_redistribute_capped),
+    # which also preserves dollar neutrality — see that function's docstring.
+    # Default False keeps existing saved-alpha numbers stable.
+    renormalize_truncation: bool = False
     booksize: float = 20_000_000
     transaction_cost_bps: float = 5.0
     decay: int = 0
@@ -145,6 +201,11 @@ class BacktestResult:
     # Schema (every value is a per-day list aligned to ``dates``):
     #   {"flat": [...], "spread": [...], "impact": [...], "borrow": [...]}
     cost_components: dict[str, list[float]] | None = None
+    # Booksize the run was scaled to.  Analytics needs it to express turnover
+    # as a fraction of book (Brain's convention) — the max-gross-exposure
+    # proxy underestimates the denominator when truncation clips weights.
+    # Optional so hand-built results in older tests keep constructing.
+    booksize: float | None = None
 
 
 class Backtester:
@@ -265,8 +326,25 @@ class Backtester:
         abs_sum = abs_sum.replace(0, np.nan)
         weights = alpha.div(abs_sum, axis=0).fillna(0.0)
 
-        # Truncation: cap each fractional weight at ±truncation
-        weights = weights.clip(lower=-config.truncation, upper=config.truncation)
+        # Truncation: cap each fractional weight at ±truncation.  Two modes:
+        #   plain clip (default) — capped mass is simply lost, so gross drops
+        #   below 1 whenever the cap binds;
+        #   renormalize_truncation — Brain-style redistribution via exact
+        #   per-side water-filling (see _redistribute_capped).  Per-SIDE is
+        #   the load-bearing detail: rescaling the whole row would move
+        #   weight clipped off one side onto the other, injecting net
+        #   exposure into a book the user configured as market-neutral.
+        if config.renormalize_truncation and config.truncation > 0:
+            # float64 explicitly — float32 rows drift past the cap/gross
+            # invariants at their ~1e-7 resolution.
+            arr = weights.to_numpy(dtype=np.float64)
+            weights = pd.DataFrame(
+                _redistribute_capped(arr, float(config.truncation)),
+                index=weights.index,
+                columns=weights.columns,
+            )
+        else:
+            weights = weights.clip(lower=-config.truncation, upper=config.truncation)
 
         # Position sizing — scale to dollar positions
         positions = weights * config.booksize
@@ -369,6 +447,7 @@ class Backtester:
                 "impact": [float(v) for v in impact_per_day.tolist()],
                 "borrow": [float(v) for v in borrow_cost_per_day.tolist()],
             },
+            booksize=float(config.booksize),
         )
 
     # ------------------------------------------------------------------

@@ -127,8 +127,12 @@ def test_fitness_wq_positive_alpha():
     assert f == pytest.approx(0.671, abs=1e-3)
 
 
-def test_fitness_wq_negative_returns_score_negative():
-    f = _fitness_wq(1.0, -0.05, 0.3)
+def test_fitness_wq_losing_alpha_scores_negative():
+    # Brain's convention: Sharpe alone carries the sign.  A coherent losing
+    # alpha has negative Sharpe AND negative annual return — the formula must
+    # not double-negate the pair into a positive score (the old sign(return)
+    # factor did exactly that).
+    f = _fitness_wq(-1.0, -0.05, 0.3)
     assert f is not None and f < 0
 
 

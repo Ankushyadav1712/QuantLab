@@ -1477,6 +1477,10 @@ def _make_config(settings: dict | None, *, run_oos: bool = True) -> SimulationCo
         end_date=s.get("end_date") or DATA_END,
         neutralization=s.get("neutralization", "market"),
         truncation=float(s.get("truncation", 0.05)),
+        # Brain-parity truncation: redistribute clipped weight so gross stays
+        # at booksize (Brain's behavior).  Default off — a plain clip — so
+        # existing saved alphas keep their headline numbers.
+        renormalize_truncation=bool(s.get("renormalize_truncation", False)),
         booksize=float(s.get("booksize", DEFAULT_BOOKSIZE)),
         transaction_cost_bps=float(s.get("transaction_cost_bps", 5.0)),
         decay=int(s.get("decay", 0)),
@@ -1508,6 +1512,7 @@ def _config_to_dict(cfg: SimulationConfig) -> dict[str, Any]:
         "end_date": cfg.end_date,
         "neutralization": cfg.neutralization,
         "truncation": cfg.truncation,
+        "renormalize_truncation": cfg.renormalize_truncation,
         "booksize": cfg.booksize,
         "transaction_cost_bps": cfg.transaction_cost_bps,
         "decay": cfg.decay,
@@ -1554,6 +1559,11 @@ _METRIC_KEYS = (
     "calmar_ratio",
     "sortino_ratio",
     "avg_turnover",
+    # Brain-parity metrics: turnover as fraction of book, arithmetic annual
+    # return, PnL per dollar traded (bps)
+    "avg_turnover_frac",
+    "annual_return_arith",
+    "margin_bps",
     "fitness",
     "win_rate",
     "profit_factor",
@@ -1936,6 +1946,46 @@ def get_universes():
         out.append({**u, "available_neutralizations": neutralizations})
 
     return {"universes": out, "default": default_universe_id()}
+
+
+# Settings preset replicating WorldQuant Brain's simulation conventions as
+# closely as the engine allows: cost-free PnL (Brain's simulated PnL charges
+# no costs), truncation 0.08 with Brain-style redistribution of clipped
+# weight, delay-1 execution.  Alpha-specific knobs (neutralization, decay,
+# universe) are deliberately absent — match those to your Brain sim by hand.
+BRAIN_PARITY_SETTINGS: dict[str, Any] = {
+    "transaction_cost_bps": 0.0,
+    "truncation": 0.08,
+    "renormalize_truncation": True,
+    "cost_model": "flat",
+    "spread_model": "none",
+    "borrow_cost_bps_annual": 0.0,
+    "execution_lag_days": 1,
+    "min_adv_dollars": 0.0,
+}
+
+
+@app.get("/api/presets/brain")
+def get_brain_preset():
+    """Brain-parity settings preset + the caveats that still apply.
+
+    Applying these settings makes the *engine* conventions match Brain
+    (costs, truncation, delay).  What it cannot fix: universe construction
+    (Brain is point-in-time; ours is a current-constituents snapshot), data
+    vendor differences, and delisting returns.  Compare the IS segment only —
+    Brain has no in-window OOS holdout.
+    """
+    return {
+        "settings": BRAIN_PARITY_SETTINGS,
+        "notes": [
+            "Compare the IS segment only — Brain's whole simulation is in-sample.",
+            "Match neutralization / decay / universe to your Brain sim manually.",
+            "Use metrics avg_turnover_frac, annual_return_arith, margin_bps and "
+            "fitness_wq — they follow Brain's definitions.",
+            "Residual gaps you cannot configure away: point-in-time universe "
+            "membership, data vendor, delisting returns.",
+        ],
+    }
 
 
 @app.get("/api/operators")

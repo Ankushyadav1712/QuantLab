@@ -48,6 +48,7 @@ date/universe filter the engine also drops any row with >50% NaN alpha.
 | `neutralization` | `"market"` | Cross-sectional demeaning mode. `"none"` = raw; `"market"` = subtract the per-day mean; `"sector"`, `"industry_group"`, `"industry"`, `"sub_industry"` = demean within each GICS group at that level. |
 | `decay` | `0` | If >0, applies a `decay_linear(alpha, decay)` linearly-weighted moving average before neutralization, smoothing the signal over `decay` days. `0` means no decay. |
 | `truncation` | `0.05` | After normalizing to fractional weights (sum of abs ≈ 1 per row), each weight is clipped to `±truncation`, capping any single name at 5% of the book. |
+| `renormalize_truncation` | `False` | Brain-parity truncation. A plain clip leaves `sum(\|w\|)` below 1 whenever the cap binds, silently shrinking gross exposure below booksize. When `True`, clipped weight is redistributed across uncapped names via exact per-side water-filling (longs and shorts rescaled to their own pre-clip masses, so a market-neutral book *stays* neutral), keeping the book fully invested like WorldQuant Brain. Applied by the **Brain parity** preset (`GET /api/presets/brain`), which also sets `truncation=0.08` and zero costs. |
 | `booksize` | `20_000_000` (`DEFAULT_BOOKSIZE`) | Dollar gross book. Fractional weights are scaled to dollar positions by `weights * booksize`; daily returns are `net_pnl / booksize`. |
 
 Neutralization order in the pipeline: point-in-time gating → ADV gating →

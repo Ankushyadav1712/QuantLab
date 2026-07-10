@@ -245,9 +245,17 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
           <input type="checkbox" data-setting="point_in_time_universe" />
           <span>Point-in-time universe (gate names by index inclusion date)</span>
         </label>
+        <label class="settings-toggle-row" style="margin-top:6px;">
+          <input type="checkbox" data-setting="renormalize_truncation" />
+          <span>Brain-style truncation (redistribute clipped weight)</span>
+        </label>
       </div>
 
       <div class="settings-footer">
+        <button type="button" class="ghost" data-role="brain-preset"
+          title="Apply WorldQuant Brain simulation conventions: 0 bps costs, 8% truncation with redistribution, delay-1 execution. Neutralization / decay / universe are left as-is — match those to your Brain sim manually.">
+          Brain parity
+        </button>
         <button type="button" class="ghost" data-role="reset">Reset to defaults</button>
       </div>
     </div>
@@ -276,6 +284,7 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
   const wfCheckbox = container.querySelector('[data-setting="run_walk_forward"]');
   const t1Checkbox = container.querySelector('[data-setting="t1_execution"]');
   const pitCheckbox = container.querySelector('[data-setting="point_in_time_universe"]');
+  const renormCheckbox = container.querySelector('[data-setting="renormalize_truncation"]');
   const oosBar = container.querySelector('[data-role="oos-bar"]');
   const universeSelect = container.querySelector('[data-setting="universe_id"]');
   const customTickersTA = container.querySelector('[data-setting="custom_tickers"]');
@@ -302,6 +311,7 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     run_walk_forward: false,
     t1_execution: false,
     point_in_time_universe: false,
+    renormalize_truncation: false,
   };
 
   textarea.value = initialExpression;
@@ -477,6 +487,7 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     if (wfCheckbox.checked !== DEFAULTS.run_walk_forward) n++;
     if (t1Checkbox.checked !== DEFAULTS.t1_execution) n++;
     if (pitCheckbox.checked !== DEFAULTS.point_in_time_universe) n++;
+    if (renormCheckbox.checked !== DEFAULTS.renormalize_truncation) n++;
     if (universeSelect.value && universeSelect.value !== DEFAULTS.universe_id) n++;
     if (customTickersTA.value.trim() !== DEFAULTS.custom_tickers) n++;
     return n;
@@ -590,6 +601,47 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     }
   });
 
+  // ---------- Brain-parity preset ----------
+  // Applies WorldQuant Brain's simulation conventions (cost-free PnL, 8%
+  // truncation with clipped-weight redistribution, delay-1).  The canonical
+  // settings live on the backend (/api/presets/brain) so frontend and docs
+  // can't drift; the local copy covers a spun-down / offline backend.
+
+  // Keys with no UI control (spread_model, borrow_cost_bps_annual,
+  // min_adv_dollars) are dropped by applySettings — safe because the UI
+  // defaults already equal the preset's values for those; revisit if the
+  // backend preset ever changes them.
+  const BRAIN_PARITY_FALLBACK = {
+    transaction_cost_bps: 0,
+    truncation: 0.08,
+    renormalize_truncation: true,
+    cost_model: 'flat',
+    execution_lag_days: 1,
+  };
+  const brainPresetBtn = container.querySelector('[data-role="brain-preset"]');
+  brainPresetBtn.addEventListener('click', async () => {
+    // Disable both footer buttons while fetching so a slow response can't
+    // land after a Reset the user clicked in the meantime; cap the wait at
+    // 3s — a spun-down free-tier backend hangs fetches for its whole cold
+    // start, and the local fallback is identical to today's backend values.
+    brainPresetBtn.disabled = true;
+    resetBtn.disabled = true;
+    brainPresetBtn.textContent = 'Applying…';
+    let preset = BRAIN_PARITY_FALLBACK;
+    try {
+      const res = await Promise.race([
+        api.getBrainPreset(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+      ]);
+      if (res && res.settings) preset = res.settings;
+    } catch (_) { /* backend unreachable or slow — apply the local copy */ }
+    applySettings(preset);
+    updateModifiedPill();
+    brainPresetBtn.disabled = false;
+    resetBtn.disabled = false;
+    brainPresetBtn.textContent = 'Brain parity';
+  });
+
   // ---------- Reset to defaults ----------
 
   const resetBtn = container.querySelector('[data-role="reset"]');
@@ -604,6 +656,7 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     wfCheckbox.checked = DEFAULTS.run_walk_forward;
     t1Checkbox.checked = DEFAULTS.t1_execution;
     pitCheckbox.checked = DEFAULTS.point_in_time_universe;
+    renormCheckbox.checked = DEFAULTS.renormalize_truncation;
     universeSelect.value = DEFAULTS.universe_id;
     customTickersTA.value = DEFAULTS.custom_tickers;
     syncUniverseUI();
@@ -754,6 +807,7 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
       run_walk_forward: wfCheckbox.checked,
       execution_lag_days: t1Checkbox.checked ? 2 : 1,
       point_in_time_universe: pitCheckbox.checked,
+      renormalize_truncation: renormCheckbox.checked,
     };
     // Universe — `universe` (explicit list) takes precedence over `universe_id`
     // on the backend, so only send one of them based on the dropdown choice.
@@ -797,6 +851,7 @@ export function createEditor(container, { initialExpression = '-rank(delta(close
     if (typeof settings.run_walk_forward === 'boolean') wfCheckbox.checked = settings.run_walk_forward;
     if (typeof settings.execution_lag_days === 'number') t1Checkbox.checked = settings.execution_lag_days >= 2;
     if (typeof settings.point_in_time_universe === 'boolean') pitCheckbox.checked = settings.point_in_time_universe;
+    if (typeof settings.renormalize_truncation === 'boolean') renormCheckbox.checked = settings.renormalize_truncation;
     // Trigger the slider-label sync helpers if they're in scope (set by sliders' input listeners)
     decaySlider.dispatchEvent(new Event('input'));
     booksizeSlider.dispatchEvent(new Event('input'));

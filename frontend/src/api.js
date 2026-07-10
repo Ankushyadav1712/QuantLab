@@ -73,6 +73,7 @@ export const api = {
   getDiversificationCurve: (samples = 20) =>
     request('GET', `/api/alphas/diversification_curve?samples=${samples}`),
   getOperators: () => request('GET', '/api/operators'),
+  getBrainPreset: () => request('GET', '/api/presets/brain'),
   getLoadingStatus: () => request('GET', '/api/loading_status'),
   getUniverse: () => request('GET', '/api/universe'),
   getUniverses: () => request('GET', '/api/universes'),

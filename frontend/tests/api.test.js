@@ -131,4 +131,11 @@ describe('api', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.sharpe_tolerance_pct).toBe(3);
   });
+
+  it('getBrainPreset hits /api/presets/brain', async () => {
+    await api.getBrainPreset();
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE_URL}/api/presets/brain`);
+    expect(opts.method).toBe('GET');
+  });
 });

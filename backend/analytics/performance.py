@@ -96,17 +96,18 @@ def _fitness_wq(
 ) -> float | None:
     """WorldQuant Brain's Fitness composite.
 
-    ``fitness = sign(returns) * sqrt(|annual_return| / max(turnover, 0.125)) * sharpe``
+    ``fitness = sharpe * sqrt(|annual_return| / max(turnover, 0.125))``
 
     The 0.125 floor stops fractional-turnover near zero from blowing up the
-    score.  Sign carries through `annual_return` so loss-making alphas
-    correctly score negative regardless of how good the Sharpe looks.
+    score.  Sharpe alone carries the sign — Brain's convention.  (An earlier
+    version multiplied by sign(annual_return) too, which double-negated: a
+    loss-making alpha has negative Sharpe AND negative return, so the product
+    came out *positive*.)
     """
     if sharpe is None:
         return None
     turnover_eff = max(abs(avg_turnover_frac), 0.125)
-    sign = 1.0 if annual_return >= 0 else -1.0
-    return sign * math.sqrt(abs(annual_return) / turnover_eff) * sharpe
+    return math.sqrt(abs(annual_return) / turnover_eff) * sharpe
 
 
 def _safe_float(x) -> float | None:
@@ -181,6 +182,28 @@ class PerformanceAnalytics:
         )
         avg_turnover_frac = avg_turnover_dollars / book_proxy if book_proxy > 0 else 0.0
         fitness = sharpe * math.sqrt(abs(annual_return)) * max(0.0, 1.0 - avg_turnover_frac)
+
+        # ---- Brain-parity metrics -----------------------------------------
+        # Brain's conventions, side-by-side with our own so a QuantLab run can
+        # be compared number-for-number against a Brain simulation:
+        #   * turnover as a fraction of BOOKSIZE (not max-gross proxy, which
+        #     under-divides when truncation clips gross below book)
+        #   * arithmetic annualized return (mean daily × 252) — consistent
+        #     with the non-compounded cumsum PnL chart, unlike the CAGR above
+        #   * margin = PnL per dollar traded, in bps
+        booksize = (
+            float(result.booksize)
+            if result.booksize is not None and result.booksize > 0
+            else book_proxy
+        )
+        avg_turnover_frac_book = avg_turnover_dollars / booksize if booksize > 0 else 0.0
+        # ×2: Brain's Returns divide annualized PnL by the INVESTED amount —
+        # half the book ($10M long + $10M short on a $20M book) — while its
+        # Turnover divides by the full book.  That asymmetry is Brain's own;
+        # daily_returns here are net_pnl / booksize, hence the doubling.
+        annual_return_arith = mean_dr * TRADING_DAYS_PER_YEAR * 2.0
+        total_traded = float(turnover.sum()) if n else 0.0
+        margin_bps = float(daily_pnl.sum()) / total_traded * 10_000.0 if total_traded > 0 else None
 
         # ---- Cost breakdown (PDF "cost realism" gap) ---------------------
         # Sum each cost component over the backtest window so the researcher
@@ -313,7 +336,9 @@ class PerformanceAnalytics:
         tail_ratio = _tail_ratio(daily_returns)
         positive_months_pct = _positive_months_pct(daily_returns)
         dd_durations = _drawdown_durations(equity)
-        fitness_wq = _fitness_wq(sharpe, annual_return, avg_turnover_frac)
+        # Brain-parity inputs: arithmetic annual return + booksize-normalized
+        # turnover, matching how Brain itself computes Fitness.
+        fitness_wq = _fitness_wq(sharpe, annual_return_arith, avg_turnover_frac_book)
 
         # ---- Long/Short exposure (PDF Section 5.1: "Long/Short Exposure") ---
         # Reported as a fraction of booksize so the numbers are scale-free and
@@ -406,6 +431,14 @@ class PerformanceAnalytics:
             "calmar_ratio": _safe_float(calmar),
             "sortino_ratio": _safe_float(sortino),
             "avg_turnover": _safe_float(avg_turnover_dollars),
+            # Brain-parity block: turnover as a fraction of booksize (Brain
+            # shows this as a %), arithmetic annualized return (Brain's
+            # convention, consistent with the cumsum PnL chart), and margin =
+            # PnL per dollar traded in bps (absent from Brain-free metrics
+            # until now).
+            "avg_turnover_frac": _safe_float(avg_turnover_frac_book),
+            "annual_return_arith": _safe_float(annual_return_arith),
+            "margin_bps": _safe_float(margin_bps) if margin_bps is not None else None,
             "fitness": _safe_float(fitness),
             "win_rate": _safe_float(win_rate),
             "profit_factor": _safe_float(profit_factor),
