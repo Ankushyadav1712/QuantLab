@@ -277,7 +277,7 @@ export function createDashboard(container) {
 
     const yearly = metrics?.yearly_returns || [];
     if (yearly.length) {
-      renderYearlyShape(yearly);
+      renderYearlyShape(yearly, metrics?.yearly_total || null);
       yearlyEl.style.display = '';
     } else {
       yearlyEl.style.display = 'none';
@@ -294,7 +294,30 @@ export function createDashboard(container) {
     }
   }
 
-  function renderYearlyShape(yearly) {
+  // Brain-style IS-Summary table cell formats. Order and units mirror
+  // WorldQuant Brain's yearly table (Turnover %, Returns on half-book,
+  // positive Drawdown, Margin in bps) so the two read side-by-side.
+  const YEARLY_COLS = [
+    { key: 'sharpe', label: 'Sharpe', fmt: (v) => v.toFixed(2) },
+    { key: 'turnover_frac', label: 'Turnover', fmt: (v) => (v * 100).toFixed(2) + '%' },
+    { key: 'fitness_wq', label: 'Fitness', fmt: (v) => v.toFixed(2) },
+    { key: 'annual_return_arith', label: 'Returns', fmt: (v) => (v * 100).toFixed(2) + '%' },
+    { key: 'max_drawdown', label: 'Drawdown', fmt: (v) => (Math.abs(v) * 100).toFixed(2) + '%' },
+    { key: 'margin_bps', label: 'Margin', fmt: (v) => v.toFixed(2) + ' bps' },
+    { key: 'long_count', label: 'Long', fmt: (v) => String(Math.round(v)) },
+    { key: 'short_count', label: 'Short', fmt: (v) => String(Math.round(v)) },
+  ];
+
+  function yearlyRowHtml(label, row, cls = '') {
+    const cells = YEARLY_COLS.map((c) => {
+      const v = row[c.key];
+      const txt = v == null || Number.isNaN(v) ? '—' : c.fmt(v);
+      return `<td class="is-num">${txt}</td>`;
+    }).join('');
+    return `<tr class="${cls}"><th style="text-align:left">${label}</th>${cells}</tr>`;
+  }
+
+  function renderYearlyShape(yearly, total) {
     // Bidirectional bar chart: bars grow up for positive Sharpe, down for negative.
     const maxAbs = Math.max(0.5, ...yearly.map((y) => Math.abs(y.sharpe ?? 0)));
     const bars = yearly
@@ -318,12 +341,35 @@ export function createDashboard(container) {
         `;
       })
       .join('');
+    // Brain-style IS-Summary table.  Only rendered when the payload carries
+    // the Brain-convention keys (older saved results predate them).
+    let tableHtml = '';
+    if (yearly.some((y) => y.turnover_frac != null || y.margin_bps != null)) {
+      const head = ['Year', ...YEARLY_COLS.map((c) => c.label)]
+        .map((h, i) => `<th${i === 0 ? ' style="text-align:left"' : ''}>${h}</th>`)
+        .join('');
+      const rows = yearly.map((y) => yearlyRowHtml(String(y.year), y)).join('');
+      const totalRow = total ? yearlyRowHtml('All', total, 'yearly-total-row') : '';
+      tableHtml = `
+        <div class="yearly-table-wrap" style="overflow-x:auto;margin-top:12px;">
+          <table class="cmp-table yearly-table">
+            <thead><tr>${head}</tr></thead>
+            <tbody>${rows}${totalRow}</tbody>
+          </table>
+          <div class="cmp-explainer" style="margin-top:6px;">
+            Brain conventions: Turnover = traded value / booksize; Returns =
+            annualized PnL / half-book (the invested amount); Margin = PnL per
+            dollar traded. Compare rows directly against Brain's IS Summary.
+          </div>
+        </div>`;
+    }
     yearlyEl.innerHTML = `
       <div class="yearly-header">
         <div class="yearly-title">Sharpe by year</div>
         <div class="yearly-subtitle">Regime-fragility check — a strong overall Sharpe can hide a losing year</div>
       </div>
       <div class="yearly-grid">${bars}</div>
+      ${tableHtml}
     `;
   }
 

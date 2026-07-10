@@ -276,20 +276,62 @@ class PerformanceAnalytics:
         ]
 
         # Per-year Sharpe + return — exposes regime fragility that the
-        # single full-period Sharpe averages out.
+        # single full-period Sharpe averages out.  Each row is extended into
+        # a Brain-style IS-Summary line (turnover %, fitness, returns on the
+        # half-book invested amount, drawdown, margin, long/short counts) so
+        # a QuantLab year reads side-by-side against Brain's yearly table.
+        half_book = booksize / 2.0 if booksize > 0 else 0.0
+
+        def _brain_year_row(dr_g: pd.Series) -> dict[str, Any]:
+            idx = dr_g.index
+            n_g = int(len(dr_g))
+            mean_g = float(dr_g.mean()) if n_g else 0.0
+            std_g = float(dr_g.std(ddof=1)) if n_g > 1 else 0.0
+            sharpe_g = mean_g / std_g * math.sqrt(TRADING_DAYS_PER_YEAR) if std_g > 0 else 0.0
+            pnl_g = daily_pnl.reindex(idx)
+            to_g = turnover.reindex(idx)
+            to_frac = float(to_g.mean()) / booksize if booksize > 0 and n_g else None
+            # Brain's Returns: annualized PnL over the invested amount (half
+            # the book) — same ×2 convention as annual_return_arith above.
+            ret_arith = (
+                float(pnl_g.sum()) / half_book * (TRADING_DAYS_PER_YEAR / n_g)
+                if half_book > 0 and n_g
+                else None
+            )
+            fit = (
+                _fitness_wq(sharpe_g, ret_arith, to_frac)
+                if ret_arith is not None and to_frac is not None
+                else None
+            )
+            cum_g = pnl_g.cumsum()
+            dd_frac = float((cum_g - cum_g.cummax()).min()) / half_book if half_book > 0 else None
+            traded = float(to_g.sum()) if n_g else 0.0
+            margin_g = float(pnl_g.sum()) / traded * 10_000.0 if traded > 0 else None
+            long_count = short_count = None
+            if positions is not None and not positions.empty:
+                pos_g = positions.reindex(idx)
+                long_count = int(round(float((pos_g > 0).sum(axis=1).mean())))
+                short_count = int(round(float((pos_g < 0).sum(axis=1).mean())))
+            return {
+                "sharpe": _safe_float(sharpe_g),
+                "annual_return": _safe_float(dr_g.sum()),
+                "n_days": n_g,
+                "turnover_frac": _safe_float(to_frac) if to_frac is not None else None,
+                "annual_return_arith": _safe_float(ret_arith) if ret_arith is not None else None,
+                "fitness_wq": _safe_float(fit) if fit is not None else None,
+                "max_drawdown": _safe_float(dd_frac) if dd_frac is not None else None,
+                "margin_bps": _safe_float(margin_g) if margin_g is not None else None,
+                "long_count": long_count,
+                "short_count": short_count,
+            }
+
         yearly_returns = []
         for year, group in daily_returns.groupby(daily_returns.index.year):
-            mean_y = float(group.mean()) if len(group) else 0.0
-            std_y = float(group.std(ddof=1)) if len(group) > 1 else 0.0
-            year_sharpe = mean_y / std_y * math.sqrt(TRADING_DAYS_PER_YEAR) if std_y > 0 else 0.0
-            yearly_returns.append(
-                {
-                    "year": int(year),
-                    "sharpe": _safe_float(year_sharpe),
-                    "annual_return": _safe_float(group.sum()),
-                    "n_days": int(len(group)),
-                }
-            )
+            yearly_returns.append({"year": int(year), **_brain_year_row(group)})
+        # Full-window row in the SAME conventions as the yearly rows, so the
+        # frontend's "All" line compares against Brain's Aggregate Data
+        # without mixing drawdown/returns denominators.
+        yearly_total = _brain_year_row(daily_returns) if n else None
 
         # ---- IC / alpha-decay / signal-quality metrics -------------------
         # These need the post-neutralization signal matrix + per-stock
@@ -449,6 +491,9 @@ class PerformanceAnalytics:
             "rolling_sharpe": _safe_list(rolling_sharpe.tolist()),
             "monthly_returns": monthly_returns,
             "yearly_returns": yearly_returns,
+            # Full-window row in the same Brain conventions as yearly_returns
+            # (the frontend's "All" line vs Brain's Aggregate Data).
+            "yearly_total": yearly_total,
             "drawdown_series": _safe_list(drawdown.tolist()),
             "deflated_sharpe": deflated,
             # Signal-quality block (Tier 1 research metrics)

@@ -1620,6 +1620,7 @@ def _compute_perf_pack(
     metrics["end_date"] = full.get("end_date")
     # Per-year breakdown surfaces regime fragility that the headline averages out
     metrics["yearly_returns"] = full.get("yearly_returns", [])
+    metrics["yearly_total"] = full.get("yearly_total")
     # Deflated Sharpe carries its own dict (sharpe + p-value + threshold)
     metrics["deflated_sharpe"] = full.get("deflated_sharpe")
     # Alpha-decay carries its own dict (ic_by_horizon + half_life_days + r²)

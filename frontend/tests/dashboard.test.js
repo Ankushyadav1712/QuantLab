@@ -62,3 +62,64 @@ describe('dashboard size-tilt chart', () => {
     expect(sizeTiltEl.style.display).toBe('none');
   });
 });
+
+describe('dashboard Brain-style yearly table', () => {
+  let container;
+  let dash;
+  let yearlyEl;
+
+  const YEAR_ROW = {
+    year: 2023,
+    sharpe: 1.24,
+    annual_return: 0.05,
+    n_days: 251,
+    turnover_frac: 0.8198,
+    fitness_wq: 0.38,
+    annual_return_arith: 0.0752,
+    max_drawdown: -0.0646,
+    margin_bps: 1.83,
+    long_count: 478,
+    short_count: 477,
+  };
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    dash = createDashboard(container);
+    yearlyEl = container.querySelector('[data-role="yearly-sharpe"]');
+  });
+
+  it('renders one row per year plus an All footer, in Brain units', () => {
+    dash.setMetrics({
+      yearly_returns: [YEAR_ROW, { ...YEAR_ROW, year: 2024, margin_bps: -5.2 }],
+      yearly_total: { ...YEAR_ROW, n_days: 502 },
+    });
+    const table = yearlyEl.querySelector('.yearly-table');
+    expect(table).not.toBeNull();
+    // header + 2 year rows + All row
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(3);
+    const text = table.textContent;
+    expect(text).toContain('81.98%');   // turnover_frac as %
+    expect(text).toContain('7.52%');    // returns on half-book as %
+    expect(text).toContain('6.46%');    // drawdown shown positive, Brain-style
+    expect(text).toContain('1.83 bps'); // margin
+    expect(text).toContain('All');
+  });
+
+  it('skips the table (keeps the bars) for old payloads without Brain keys', () => {
+    dash.setMetrics({
+      yearly_returns: [{ year: 2023, sharpe: 1.0, annual_return: 0.05, n_days: 251 }],
+    });
+    expect(yearlyEl.querySelector('.yearly-table')).toBeNull();
+    expect(yearlyEl.querySelectorAll('.yearly-col').length).toBe(1);
+  });
+
+  it('renders missing cells as em-dash', () => {
+    dash.setMetrics({
+      yearly_returns: [{ ...YEAR_ROW, margin_bps: null, long_count: null }],
+      yearly_total: null,
+    });
+    const table = yearlyEl.querySelector('.yearly-table');
+    expect(table.textContent).toContain('—');
+  });
+});

@@ -899,6 +899,13 @@ li.diag-warning .diag-tag { background: rgba(240, 160, 32, 0.25); color: var(--a
 }
 .yearly-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .yearly-subtitle { font-size: 11px; color: var(--text-secondary); }
+/* Brain-style IS-Summary table: the "All" aggregate row reads as a footer. */
+.yearly-table { width: 100%; font-variant-numeric: tabular-nums; }
+.yearly-table .yearly-total-row th,
+.yearly-table .yearly-total-row td {
+  font-weight: 600;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.15));
+}
 .yearly-grid {
   display: grid;
   grid-auto-flow: column;

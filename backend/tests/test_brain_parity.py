@@ -220,6 +220,50 @@ def test_fitness_wq_sign_carried_by_sharpe_not_doubled():
     assert f == pytest.approx(-1.2 * math.sqrt(0.08 / 0.5))
 
 
+# ---------- Brain-style yearly table ----------
+
+
+def test_yearly_rows_carry_brain_columns():
+    booksize = 20_000_000.0
+    # 300 business days from 2023-01 spills into 2024 → exactly 2 year rows.
+    idx = pd.date_range("2023-01-02", periods=300, freq="B")
+    pnl = [1000.0] * len(idx)
+    to = [2_000_000.0] * len(idx)
+    weights = pd.DataFrame({"A": [0.5] * len(idx), "B": [-0.5] * len(idx)}, index=idx)
+    result = BacktestResult(
+        dates=[d.strftime("%Y-%m-%d") for d in idx],
+        daily_pnl=pnl,
+        cumulative_pnl=list(np.cumsum(pnl)),
+        daily_returns=[p / booksize for p in pnl],
+        weights=weights,
+        turnover=to,
+        positions=weights * booksize,
+        booksize=booksize,
+    )
+    m = PerformanceAnalytics().compute(result)
+    rows = m["yearly_returns"]
+    assert [r["year"] for r in rows] == [2023, 2024]
+
+    y23 = rows[0]
+    n23 = y23["n_days"]
+    # Turnover = mean traded / full book; Returns = annualized PnL / half book.
+    assert y23["turnover_frac"] == pytest.approx(2_000_000.0 / booksize)
+    assert y23["annual_return_arith"] == pytest.approx(
+        (1000.0 * n23) / (booksize / 2) * (252 / n23)
+    )
+    # Margin = PnL per dollar traded in bps: 1000/2M × 1e4 = 5 bps.
+    assert y23["margin_bps"] == pytest.approx(5.0)
+    # Constant PnL never draws down; one long + one short name per day.
+    assert y23["max_drawdown"] == pytest.approx(0.0)
+    assert y23["long_count"] == 1
+    assert y23["short_count"] == 1
+
+    total = m["yearly_total"]
+    assert total["n_days"] == 300
+    assert total["margin_bps"] == pytest.approx(5.0)
+    assert total["turnover_frac"] == pytest.approx(0.1)
+
+
 # ---------- /api/presets/brain + end-to-end settings echo ----------
 
 
