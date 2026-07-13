@@ -53,6 +53,23 @@ Env vars set in `render.yaml`:
 
 - `ENVIRONMENT=production`
 - `PYTHON_VERSION=3.11.10`
+- `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` (`sync: false`) — see below
+
+### Durable persistence (Turso)
+
+Render's free disk is **ephemeral**: it is wiped on every restart, redeploy, and idle spin-down. The saved-alpha database is a SQLite file on that disk, so **without Turso your saved alphas disappear** the next time the instance cycles. Turso is hosted [libSQL](https://turso.tech) (SQLite-compatible) with a free tier; the backend talks to it over its HTTP protocol, so the data lives off the ephemeral disk.
+
+**It's opt-in.** With no Turso env vars the backend uses the local SQLite file exactly as before — fine for local dev and the test suite. Set both vars and it switches to Turso automatically. Confirm which backend is live at any time via `GET /health` → `{"status":"ok","persistence":"turso"}` (or `"local"`).
+
+One-time setup:
+
+1. Install the CLI and sign up: `curl -sSfL https://get.tur.so/install.sh | bash`, then `turso auth signup`.
+2. Create a database: `turso db create quantlab`.
+3. Get its URL: `turso db show quantlab --url` → a `libsql://…turso.io` value.
+4. Mint a token: `turso db tokens create quantlab`.
+5. In the Render dashboard (backend service → Environment), set `TURSO_DATABASE_URL` to the URL from step 3 and `TURSO_AUTH_TOKEN` to the token from step 4, then save (Render redeploys).
+
+The schema is created automatically on first boot (`init_db` runs the same `CREATE TABLE IF NOT EXISTS` + additive migrations against Turso). Nothing to migrate by hand. `libsql://` URLs are converted to `https://` internally; pass the URL exactly as `turso db show` prints it.
 
 ### Service 2 — `quantlab-frontend` (static site)
 

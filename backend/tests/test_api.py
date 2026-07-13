@@ -11,7 +11,10 @@ import pytest
 def test_health_returns_200(client):
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    body = r.json()
+    assert body["status"] == "ok"
+    # persistence advertises the active DB backend; local file in tests.
+    assert body["persistence"] == "local"
 
 
 def test_validate_valid_expression(client):

@@ -19,6 +19,14 @@ services:
         value: production
       - key: PYTHON_VERSION
         value: 3.11.10
+      # Durable persistence via Turso (hosted libSQL).  Render's free disk is
+      # ephemeral, so without these the saved-alpha DB is wiped on every
+      # restart.  Set both in the Render dashboard (sync:false = not committed);
+      # leave them unset to keep using the local file.  See docs/deployment.md.
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
     healthCheckPath: /health
 
   - type: web

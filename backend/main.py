@@ -61,7 +61,7 @@ from data.universes import (
     gics_for,
     list_universes,
 )
-from db.database import connect
+from db.database import active_backend, connect
 from db.migrations import init_db
 from engine.backtester import Backtester, SimulationConfig
 from engine.batch import _correlation, _run_one, run_batch
@@ -1057,6 +1057,7 @@ _state: dict[str, Any] = {}
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await init_db()
+    log.info("db.backend", extra={"persistence": active_backend()})
 
     # Pre-populate empty states so endpoints don't fail immediately
     _state["fetcher"] = DataFetcher()
@@ -1858,7 +1859,10 @@ def _data_quality(
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # `persistence` lets you confirm at a glance whether a deploy is writing to
+    # Turso (durable) or the local ephemeral file — the #1 thing to verify
+    # after wiring up TURSO_* env vars on Render.
+    return {"status": "ok", "persistence": active_backend()}
 
 
 @app.get("/api/loading_status")
@@ -2752,26 +2756,22 @@ async def save_alpha(req: AlphaSaveRequest):
         # version in that lineage (parent = the current head) rather than a
         # detached row — so the library keeps an audit trail of how an alpha
         # evolved instead of scattering near-duplicates.
+        #
+        # version and parent_id are computed by SUBQUERY inside the INSERT (not
+        # a separate SELECT) so the whole thing is one atomic write.  A prior
+        # read-then-write raced two concurrent same-name saves into duplicate
+        # version numbers — SQLite/libSQL serialize writes, so the subqueries
+        # see any just-committed sibling and increment past it.
         db.row_factory = __import__("aiosqlite").Row
-        head_cur = await db.execute(
-            "SELECT id, version FROM alphas WHERE name = ? ORDER BY version DESC, id DESC LIMIT 1",
-            (req.name,),
-        )
-        head = await head_cur.fetchone()
-        if head is not None:
-            version = int(head["version"] or 1) + 1
-            parent_id = int(head["id"])
-        else:
-            version = 1
-            parent_id = None
-
         cursor = await db.execute(
             """
             INSERT INTO alphas
                 (name, expression, notes, sharpe, annual_return, max_drawdown,
                  turnover, fitness, created_at, result_json,
                  code_signature, data_signature, git_hash, tags, version, parent_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                (SELECT COALESCE(MAX(version), 0) + 1 FROM alphas WHERE name = ?),
+                (SELECT id FROM alphas WHERE name = ? ORDER BY version DESC, id DESC LIMIT 1))
             """,
             (
                 req.name,
@@ -2788,12 +2788,17 @@ async def save_alpha(req: AlphaSaveRequest):
                 provenance.get("data_signature"),
                 provenance.get("git_hash"),
                 json.dumps(req.tags),
-                version,
-                parent_id,
+                req.name,  # version subquery
+                req.name,  # parent_id subquery (NULL when this is the first)
             ),
         )
         await db.commit()
         row_id = cursor.lastrowid
+        # Read the assigned version back by rowid — race-free (the row exists)
+        # and avoids re-deriving it in Python.
+        ver_cur = await db.execute("SELECT version FROM alphas WHERE id = ?", (row_id,))
+        ver_row = await ver_cur.fetchone()
+        version = int(ver_row["version"]) if ver_row else 1
 
     log.info(
         "alpha.saved",
@@ -2986,16 +2991,8 @@ async def rollback_alpha(alpha_id: int, version: int):
         if target is None:
             raise HTTPException(status_code=404, detail=f"Version {version} not found for {name!r}")
 
-        head_cur = await db.execute(
-            "SELECT id, version FROM alphas WHERE name = ? ORDER BY version DESC, id DESC LIMIT 1",
-            (name,),
-        )
-        head = await head_cur.fetchone()
-        if head is None:  # unreachable (target exists ⇒ lineage non-empty), but narrows for mypy
-            raise HTTPException(status_code=404, detail="Alpha not found")
-        new_version = int(head["version"] or 1) + 1
-        parent_id = int(head["id"])
-
+        # version/parent_id via subquery inside the INSERT (atomic, race-free) —
+        # same rationale as save_alpha.  The target's content is copied as-is.
         t = dict(target)
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = await db.execute(
@@ -3004,7 +3001,9 @@ async def rollback_alpha(alpha_id: int, version: int):
                 (name, expression, notes, sharpe, annual_return, max_drawdown,
                  turnover, fitness, created_at, result_json,
                  code_signature, data_signature, git_hash, tags, version, parent_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                (SELECT COALESCE(MAX(version), 0) + 1 FROM alphas WHERE name = ?),
+                (SELECT id FROM alphas WHERE name = ? ORDER BY version DESC, id DESC LIMIT 1))
             """,
             (
                 t["name"],
@@ -3021,12 +3020,15 @@ async def rollback_alpha(alpha_id: int, version: int):
                 t["data_signature"],
                 t["git_hash"],
                 t["tags"],
-                new_version,
-                parent_id,
+                name,  # version subquery
+                name,  # parent_id subquery
             ),
         )
         await db.commit()
         new_id = cursor.lastrowid
+        nv_cur = await db.execute("SELECT version FROM alphas WHERE id = ?", (new_id,))
+        nv_row = await nv_cur.fetchone()
+        new_version = int(nv_row["version"]) if nv_row else 1
 
     log.info(
         "alpha.rolledback",
