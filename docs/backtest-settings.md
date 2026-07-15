@@ -41,6 +41,19 @@ Both are ISO date strings. `_make_config` uses `or` fallbacks, so an empty
 string also falls back to the `DATA_START` / `DATA_END` defaults. After the
 date/universe filter the engine also drops any row with >50% NaN alpha.
 
+### `us_top1000` — liquidity-ranked universe (Brain's TOP1000 selection method)
+
+WorldQuant Brain's TOP1000 selects the top 1000 US names by **dollar-trading-volume**, not market cap. The `us_top1000` preset reproduces that *selection criterion*: rank a broad candidate pool (Russell 3000) by median daily `close × volume`, keep the top 1000. Because the running server can't hold a 3000-name pool (free-tier memory), the ranking is an **offline build step**:
+
+```bash
+python backend/scripts/build_top1000_universe.py            # writes data/tickers/us_top1000.txt
+python backend/scripts/build_top1000_universe.py --dry-run  # preview without writing
+```
+
+Until that file exists, selecting `us_top1000` transparently falls back to `russell1000` (with a warning in the logs). Re-run the script periodically (e.g. monthly) to refresh the ranking; commit or ship the txt file with your deploy so Render picks it up.
+
+**What it does and doesn't fix vs Brain:** it closes the *selection-method* gap (liquidity vs market-cap ranking). It does **not** close the point-in-time membership gap (the list is still a current snapshot) or the data-vendor gap (still yfinance) — see the Brain-parity notes for those.
+
 ## Portfolio construction
 
 | Setting | Default | Effect |

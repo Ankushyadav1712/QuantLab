@@ -178,39 +178,101 @@ def _get_sp500_tickers() -> list[str]:
     return _load_or_fetch_ticker_list("sp500", _fetch)
 
 
+def _fetch_ishares_tickers(url: str) -> list[str]:
+    """Parse the ticker column out of an iShares ETF holdings CSV.
+
+    The AJAX endpoint prepends several metadata rows before the real
+    ``Ticker,...`` header; we skip to it, then keep only plausible equity
+    symbols (≤5 chars, dots→dashes for class shares like BRK.B → BRK-B).
+    """
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+
+    import io as _io  # noqa: PLC0415
+
+    import pandas as _pd  # noqa: PLC0415
+
+    lines = raw.splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("Ticker,")), None)
+    if start is None:
+        return []
+    df = _pd.read_csv(_io.StringIO("\n".join(lines[start:])))
+    result: list[str] = []
+    for t in map(str, df["Ticker"].dropna()):
+        clean = str(t).strip().replace(".", "-")
+        if clean and clean not in ("-", "nan") and len(clean) <= 5:
+            result.append(clean)
+    return result
+
+
 def _get_russell1000_tickers() -> list[str]:
     """Return Russell 1000 tickers from the iShares IWB ETF holdings CSV."""
-
-    def _fetch() -> list[str]:
-        import urllib.request
-
-        url = (
+    return _load_or_fetch_ticker_list(
+        "russell1000",
+        lambda: _fetch_ishares_tickers(
             "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf"
             "/1467271812596.ajax?fileType=csv&fileName=IWB_holdings&dataType=fund"
-        )
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        ),
+    )
 
-        import pandas as _pd  # noqa: PLC0415
 
-        lines = raw.splitlines()
-        # iShares CSV has metadata rows before the actual header
-        start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("Ticker,")), None)
-        if start is None:
-            return []
-        import io as _io  # noqa: PLC0415
+def _get_russell2000_tickers() -> list[str]:
+    """Return Russell 2000 tickers from the iShares IWM ETF holdings CSV.
 
-        df = _pd.read_csv(_io.StringIO("\n".join(lines[start:])))
-        raw_tickers: list[str] = list(map(str, df["Ticker"].dropna()))
-        result: list[str] = []
-        for t in raw_tickers:
-            clean = str(t).strip().replace(".", "-")
-            if clean and clean not in ("-", "nan") and len(clean) <= 5:
-                result.append(clean)
-        return result
+    Used only as extra candidates for the liquidity-ranked ``us_top1000``
+    build — not a standalone universe (the free tier can't hold 2000 names).
+    """
+    return _load_or_fetch_ticker_list(
+        "russell2000",
+        lambda: _fetch_ishares_tickers(
+            "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf"
+            "/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund"
+        ),
+    )
 
-    return _load_or_fetch_ticker_list("russell1000", _fetch)
+
+def rank_by_dollar_volume(dollar_volume, n: int, *, min_days: int = 1) -> list[str]:
+    """Rank tickers by median daily dollar volume (descending), return the top n.
+
+    ``dollar_volume`` is a (dates × tickers) frame of ``close × volume``.  The
+    per-ticker median over the window is a robust liquidity proxy (ignores the
+    odd spike day); NaN columns (no data) drop out.  This is WorldQuant Brain's
+    TOP-universe selection criterion — liquidity, not market cap.
+
+    ``min_days`` drops tickers with fewer than that many observed days before
+    ranking, so a name that traded once (recent IPO, delisting stub) can't
+    outrank a continuously-traded one on a single spike.  Default 1 keeps any
+    ticker with data; the build script passes a fraction of the window.
+    """
+    counts = dollar_volume.notna().sum(axis=0)
+    eligible = dollar_volume.loc[:, counts >= max(1, min_days)]
+    median_dv = eligible.median(axis=0, skipna=True).dropna()
+    ranked = median_dv.sort_values(ascending=False)
+    return [str(t) for t in ranked.index[:n]]
+
+
+def _get_us_top1000_tickers() -> list[str]:
+    """Top 1000 US names by liquidity, from the pre-built list on disk.
+
+    The ranking is an OFFLINE build (scripts/build_top1000_universe.py) so the
+    running server never fetches/holds a 3000-name pool — this just reads the
+    resulting file, same footprint as russell1000.  Until the file exists it
+    transparently falls back to the (cap-ranked) Russell 1000 so the universe
+    is always usable.
+    """
+    path = _TICKERS_DIR / "us_top1000.txt"
+    if path.exists():
+        tickers = [ln.strip() for ln in path.read_text().splitlines() if ln.strip()]
+        if tickers:
+            return tickers
+    _warnings.warn(
+        "[universe:us_top1000] liquidity-ranked list not built; falling back to "
+        "russell1000. Run scripts/build_top1000_universe.py to generate it."
+    )
+    return _get_russell1000_tickers()
 
 
 # GICS classification.  Values are the post-2023 taxonomy.
@@ -1067,6 +1129,21 @@ _UNIVERSES: dict[str, dict[str, Any]] = {
         "is_default": False,
         "preload": False,
     },
+    "us_top1000": {
+        "name": "US Top 1000 by liquidity",
+        "description": (
+            "Top 1000 US stocks ranked by trailing dollar-volume — WorldQuant "
+            "Brain's TOP1000 selection method (liquidity), vs Russell 1000's "
+            "market-cap ranking. Built offline by "
+            "scripts/build_top1000_universe.py; falls back to Russell 1000 "
+            "until that list is generated. Note: closes the *selection* gap "
+            "with Brain, not the data-vendor or point-in-time gaps."
+        ),
+        "tickers": None,  # lazy-loaded via _get_us_top1000_tickers()
+        "ticker_count_estimate": 1000,
+        "is_default": False,
+        "preload": False,
+    },
 }
 
 
@@ -1121,6 +1198,7 @@ def get_universe(universe_id: str) -> dict[str, Any]:
         _fetchers: dict[str, Any] = {
             "sp500": _get_sp500_tickers,
             "russell1000": _get_russell1000_tickers,
+            "us_top1000": _get_us_top1000_tickers,
         }
         fetch_fn = _fetchers.get(universe_id)
         if fetch_fn:
