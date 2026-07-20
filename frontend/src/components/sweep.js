@@ -40,6 +40,12 @@ export function createSweepResults(container) {
 
   function clear() { container.innerHTML = ''; }
 
+  // Transient progress line shown while a background sweep job runs; replaced
+  // by the grid once render() is called with the final payload.
+  function setStatus(text) {
+    container.innerHTML = `<div class="placeholder">${String(text ?? '')}</div>`;
+  }
+
   function render(payload) {
     const dims = payload.dimensions || [];
     const cells = payload.cells || [];
@@ -203,5 +209,5 @@ export function createSweepResults(container) {
     `;
   }
 
-  return { render, clear };
+  return { render, clear, setStatus };
 }

@@ -1,7 +1,7 @@
 // QuantLab — app entry point.
 
 import './styles/index.css';
-import { api, openBatchStream } from './api.js';
+import { api, openBatchStream, runSweepJob } from './api.js';
 import { createEditor } from './components/editor.js';
 import { createDashboard } from './components/dashboard.js';
 import { createCharts } from './components/charts.js';
@@ -122,14 +122,36 @@ editor.setOnRun(async () => {
   // grid and render the heatmap, but don't touch the dashboard / charts /
   // save button (those reflect a single backtest).
   if (editor.getIsSweep()) {
-    try {
-      const resp = await api.sweep(expression, settings, 50);
+    // Prefer the background job (non-blocking, shows progress, survives request
+    // timeouts on big grids). Fall back to the synchronous endpoint if the job
+    // API is unavailable (older backend → 404 on submit).
+    const done = (resp) => {
       sweep.render(resp);
       document.getElementById('sweep').scrollIntoView({ behavior: 'smooth' });
       toast(`Sweep complete · ${resp.n_combinations} backtests`, 'success', { duration: 2500 });
-    } catch (e) {
-      toast(e.message, 'error', { title: 'Sweep failed', duration: 8000 });
-    }
+    };
+    const runSync = async () => {
+      try {
+        done(await api.sweep(expression, settings, 50));
+      } catch (e) {
+        sweep.clear();
+        toast(e.message, 'error', { title: 'Sweep failed', duration: 8000 });
+      }
+    };
+    sweep.setStatus('Submitting sweep…');
+    document.getElementById('sweep').scrollIntoView({ behavior: 'smooth' });
+    runSweepJob(expression, settings, 50, {
+      onProgress: ({ done: d, total }) =>
+        sweep.setStatus(total ? `Running sweep… ${d}/${total}` : 'Running sweep…'),
+      onDone: done,
+      onError: (msg, err) => {
+        // A 404 (job endpoints missing) or network hiccup → try the sync path
+        // once before surfacing an error, so nothing regresses on old backends.
+        if (err && /HTTP 404/.test(String(msg))) return runSync();
+        sweep.clear();
+        toast(msg, 'error', { title: 'Sweep failed', duration: 8000 });
+      },
+    });
     return;
   }
 

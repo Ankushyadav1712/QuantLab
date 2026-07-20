@@ -65,6 +65,9 @@ export const api = {
     request('POST', '/api/batch_simulate', { alphas, settings }),
   sweep: (expression, settings = {}, max_combinations = 50) =>
     request('POST', '/api/sweep', { expression, settings, max_combinations }),
+  submitSweepJob: (expression, settings = {}, max_combinations = 50) =>
+    request('POST', '/api/jobs/sweep', { expression, settings, max_combinations }),
+  getJob: (id) => request('GET', `/api/jobs/${id}`),
   getCorrelations: (ids) =>
     request('POST', '/api/alphas/correlations', { alpha_ids: ids }),
   validateCorrelation: (local, external, sharpe_tolerance_pct = 3.0) =>
@@ -79,6 +82,51 @@ export const api = {
   getUniverses: () => request('GET', '/api/universes'),
   getExamples: () => request('GET', '/api/examples'),
 };
+
+// Run a sweep as a background job: submit, then poll GET /api/jobs/{id} until
+// terminal. Invokes onProgress({done,total}) per tick, then onDone(result) or
+// onError(message). Returns a handle with cancel() that stops polling (the
+// server-side job keeps running — harmless). Falls back cleanly: callers that
+// hit an old backend (404 on the job endpoints) should catch and use api.sweep.
+export function runSweepJob(
+  expression,
+  settings = {},
+  max_combinations = 50,
+  { onProgress, onDone, onError, intervalMs = 800 } = {}
+) {
+  let cancelled = false;
+  let timer = null;
+  const stop = () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
+
+  (async () => {
+    let job;
+    try {
+      job = await api.submitSweepJob(expression, settings, max_combinations);
+    } catch (e) {
+      if (!cancelled) onError?.(e?.message || 'submit failed', e);
+      return;
+    }
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const s = await api.getJob(job.job_id);
+        if (cancelled) return;
+        if (s.progress) onProgress?.(s.progress);
+        if (s.status === 'done') return onDone?.(s.result);
+        if (s.status === 'error') return onError?.(s.error || 'job failed');
+        timer = setTimeout(poll, intervalMs);
+      } catch (e) {
+        if (!cancelled) onError?.(e?.message || 'poll failed', e);
+      }
+    };
+    poll();
+  })();
+
+  return { cancel: stop };
+}
 
 // Streaming batch backtest over WebSocket. Invokes onResult({index,total,row})
 // per alpha, then onComplete({n_alphas,n_ok,correlation_matrix,...}); onError

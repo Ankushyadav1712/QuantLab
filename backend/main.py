@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import functools
 import hmac
 import json
@@ -9,6 +10,7 @@ import os
 import threading
 import time
 import warnings
+from collections.abc import Callable
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -67,6 +69,7 @@ from engine.backtester import Backtester, SimulationConfig
 from engine.batch import _correlation, _run_one, run_batch
 from engine.combine import greedy_orthogonal_select, ic_weights
 from engine.evaluator import AlphaEvaluator
+from engine.jobs import JobQueueFull, JobRegistry
 from engine.lint import lint_ast
 from engine.parser import BinaryOp, DataField, FunctionCall, Parser, UnaryOp
 from engine.sweep import combo_for_index, expand_sweeps
@@ -1184,8 +1187,6 @@ async def lifespan(_app: FastAPI):
     if is_test:
         load_data_sync()
     else:
-        import asyncio
-
         asyncio.create_task(asyncio.to_thread(load_data_sync))
 
     yield
@@ -2185,17 +2186,16 @@ def simulate(request: Request, req: SimulationRequest):
     return response
 
 
-@app.post("/api/sweep")
-@limiter.limit(_LIMIT_SIMULATE)
-@_serialize_backtest
-def sweep(request: Request, req: SweepRequest):
-    """Parameter-sweep variant of /api/simulate.
-
-    Expands ``{a..b(:s)?}`` tokens into a cartesian product of expressions,
-    runs each through the existing pipeline (IS-only), and returns a flat
-    grid of summary metrics the frontend renders as a heatmap or table.
+def _run_sweep_core(
+    req: SweepRequest,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
+    """Shared sweep body used by both ``/api/sweep`` (sync, gated) and the
+    background job runner.  Does NOT touch the concurrency gate — the caller
+    owns that (the endpoint via ``@_serialize_backtest``, the job worker by
+    acquiring it directly) so the gate is never double-acquired.  ``progress_cb``
+    (done, total) fires after each cell for the job's progress bar.
     """
-    del request  # required-by-name for slowapi
     if not _state.get("ready", False):
         raise HTTPException(
             status_code=503, detail="System is downloading financial data. Please wait a moment."
@@ -2211,19 +2211,16 @@ def sweep(request: Request, req: SweepRequest):
     spy = _state.get("spy_returns")
 
     cells: list[dict[str, Any]] = []
+    total = len(expansion["expressions"])
     for i, expr in enumerate(expansion["expressions"]):
         params = combo_for_index(i, expansion)
         try:
             ast = Parser().parse(expr)
             errors = [d for d in lint_ast(ast) if d["severity"] == "error"]
             if errors:
-                cells.append(
-                    {
-                        "expression": expr,
-                        "params": params,
-                        "error": errors[0]["message"],
-                    }
-                )
+                cells.append({"expression": expr, "params": params, "error": errors[0]["message"]})
+                if progress_cb:
+                    progress_cb(i + 1, total)
                 continue
 
             alpha = _evaluate(expr)
@@ -2231,12 +2228,10 @@ def sweep(request: Request, req: SweepRequest):
             metrics, _, _ = _compute_perf_pack(is_result, perf, spy=spy, n_trials=1)
         except (ValueError, HTTPException) as exc:
             cells.append(
-                {
-                    "expression": expr,
-                    "params": params,
-                    "error": str(getattr(exc, "detail", exc)),
-                }
+                {"expression": expr, "params": params, "error": str(getattr(exc, "detail", exc))}
             )
+            if progress_cb:
+                progress_cb(i + 1, total)
             continue
 
         cells.append(
@@ -2250,6 +2245,8 @@ def sweep(request: Request, req: SweepRequest):
                 "avg_turnover": metrics.get("avg_turnover"),
             }
         )
+        if progress_cb:
+            progress_cb(i + 1, total)
 
     return {
         "expression": req.expression,
@@ -2258,6 +2255,106 @@ def sweep(request: Request, req: SweepRequest):
         "n_combinations": expansion["total"],
         "settings": _config_to_dict(cfg),
     }
+
+
+@app.post("/api/sweep")
+@limiter.limit(_LIMIT_SIMULATE)
+@_serialize_backtest
+def sweep(request: Request, req: SweepRequest):
+    """Parameter-sweep variant of /api/simulate.
+
+    Expands ``{a..b(:s)?}`` tokens into a cartesian product of expressions,
+    runs each through the existing pipeline (IS-only), and returns a flat
+    grid of summary metrics the frontend renders as a heatmap or table.
+
+    Synchronous — for large sweeps prefer ``POST /api/jobs/sweep``, which runs
+    the same work as a background job the client polls.
+    """
+    del request  # required-by-name for slowapi
+    return _run_sweep_core(req)
+
+
+# ---------------------------------------------------------------------------
+# Async job queue — long sweeps run in the background instead of blocking the
+# request (and timing out).  See engine/jobs.py for the free-tier scope.
+# ---------------------------------------------------------------------------
+# max_active kept small so a burst of submitted jobs can't spawn too many
+# gate-blocked worker threads and starve interactive backtests.
+_job_registry = JobRegistry(max_active=4)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _job_error_message(exc: BaseException) -> str:
+    # HTTPException carries the useful text in .detail; everything else in str().
+    return str(getattr(exc, "detail", exc)) or exc.__class__.__name__
+
+
+def _run_sweep_job(job_id: str, req: SweepRequest) -> None:
+    """Run one sweep job to completion on a dedicated daemon thread.
+
+    Deliberately NOT an asyncio task: finalizing a job (set_done) must not
+    depend on the event loop still running to deliver an ``await`` result —
+    that coupling left jobs stuck 'running' when the loop wasn't spinning.
+    A plain thread owns the whole lifecycle and only touches the thread-safe
+    registry, so it's robust regardless of loop state.  The gate keeps CPU
+    work serialized; ``_backtest_slot`` sheds (429 → job error) if the server
+    is saturated rather than pinning the thread forever.
+    """
+    _job_registry.set_running(job_id, _now_iso())
+    try:
+        with _backtest_slot():
+            result = _run_sweep_core(
+                req,
+                progress_cb=lambda done, total: _job_registry.update_progress(
+                    job_id, done, total, _now_iso()
+                ),
+            )
+        _job_registry.set_done(job_id, result, _now_iso())
+    except Exception as exc:  # noqa: BLE001 — any failure becomes the job's error
+        _job_registry.set_error(job_id, _job_error_message(exc), _now_iso())
+
+
+@app.post("/api/jobs/sweep")
+@limiter.limit(_LIMIT_SIMULATE)
+async def submit_sweep_job(request: Request, req: SweepRequest):
+    """Submit a parameter sweep as a background job; poll GET /api/jobs/{id}.
+
+    Returns a job_id immediately (ungated) even while a backtest is running;
+    the worker thread acquires the concurrency gate itself.
+    """
+    del request  # required-by-name for slowapi
+    try:
+        job = _job_registry.create("sweep", _now_iso())
+    except JobQueueFull as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many jobs in flight: {exc}. Retry shortly.",
+            headers={"Retry-After": "10"},
+        )
+    # Capture the accepted status ("queued") BEFORE starting the thread — the
+    # worker flips it to "running" almost immediately, so reading job.status
+    # after start() would race.
+    accepted = {"job_id": job.id, "status": job.status}
+    threading.Thread(
+        target=_run_sweep_job, args=(job.id, req), name=f"job-{job.id}", daemon=True
+    ).start()
+    return accepted
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    return {"jobs": _job_registry.list()}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    view = _job_registry.snapshot(job_id)
+    if view is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return view
 
 
 @app.post("/api/compare")
