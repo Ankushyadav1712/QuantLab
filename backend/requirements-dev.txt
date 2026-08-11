@@ -4,7 +4,7 @@
 ruff==0.14.4
 pip-audit==2.9.0
 pytest-cov==6.0.0
-mypy==1.13.0
+mypy==2.1.0
 # Property-based tests on operators — auto-generates inputs (random shapes /
 # NaN rates) and checks invariants (output bounds, NaN preservation, etc.).
 # Catches edge cases the hand-written examples don't.
